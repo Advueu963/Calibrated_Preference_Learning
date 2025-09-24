@@ -1,3 +1,20 @@
+import torch
+import torch.nn as nn
+from math import factorial
+
+
+class PlackettLuceLoss(nn.Module):
+    def __init__(self):
+        super(PlackettLuceLoss, self).__init__()
+
+    def forward(self, y_true, logits, model):
+        y_pred_probs_true_ranks = model.predict_proba_ranking_logits(logits, y_true)
+        loss = -torch.log(
+            y_pred_probs_true_ranks + 1e-10
+        )  # Add a small constant to avoid log(0)
+        return torch.mean(loss)
+
+
 class PlackettLuceBrierPreferenceLoss(nn.Module):
     def __init__(self) -> None:
         super(PlackettLuceBrierPreferenceLoss, self).__init__()
@@ -39,8 +56,9 @@ class PlackettLuceBrierPreferenceLoss(nn.Module):
 
 
 class BrierPreferenceLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, maximal_number_of_ranks:int):
         super(BrierPreferenceLoss, self).__init__()
+        self.maximal_number_of_ranks = maximal_number_of_ranks
 
     def forward(self, y_true, y_pred, y_pred_probs):
 
@@ -59,25 +77,25 @@ class BrierPreferenceLoss(nn.Module):
         rank_probs = torch.sum(probs_of_pred_ranks, dim=-1)
 
         valid_predictions = rank_probs >= (1 - rank_probs) / (
-            factorial(y_true.shape[1]) - 1
+            self.maximal_number_of_ranks - 1
         )  # valid if the predicted rank is more probable than random guessing for the remaining ranks
 
         # print("SUMMED PROBS OF PRED RANKS: ", probs_of_pred_ranks)
         loss = (
             1
             + rank_probs**2
-            + (1 - rank_probs) ** 2 / (factorial(y_true.shape[1]) - 1)
+            + (1 - rank_probs) ** 2 / (self.maximal_number_of_ranks - 1)
             - 2
             * torch.where(
                 mask,
                 rank_probs,
-                (1 - rank_probs) / (factorial(y_true.shape[1]) - 1),
+                (1 - rank_probs) / (self.maximal_number_of_ranks - 1),
             )
         )
         loss = torch.where(
             valid_predictions,
             loss,
-            (10 - 1 / (factorial(y_true.shape[1]) - 1))
+            (10 - 1 / (self.maximal_number_of_ranks - 1))
             * loss,  # Penalize invalid predictions
         )
 

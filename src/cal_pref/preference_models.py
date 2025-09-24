@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import itertools
 
 def build_preference_mlp(input_dim: int, hidden_dims: list[int], output_dim: int):
     layers: list[nn.Module] = []
@@ -44,16 +45,85 @@ class PreferenceModel(nn.Module):
         return x
 
     def predict_proba(self, x):
-        logits = self.forward(x)
-        probs = torch.exp(logits) / torch.sum(
-            torch.exp(logits + torch.arange(1, self.n_items).log().sum()),
-            dim=-1,
-            keepdim=True,
-        )
+        logits = self(x)
+        logits = logits.view(logits.shape[0], self.n_items, self.n_items)        
+        probs = torch.exp(logits) / torch.sum(torch.exp(logits), dim=-1, keepdim=True)
+        probs = probs.view(probs.shape[0], -1)
         # print("PROBS: ", probs.shape)
+
         return probs
 
-    def predict(self, x):
+    def predict_proba_label_ranking(self, x, rank):
+        if len(rank.shape) == 1:
+            rank = rank.expand(x.shape[0], -1)
+        x = self.mlp(x)
+        probs = []
+        lambda_vector = torch.ones((x.shape[0], self.n_items), dtype=torch.float32)
+        for i, head in enumerate(self.multi_heads):
+            current_rank_of_item = rank[:, i] - 1  # ranks are 1-indexed
+            item_head_winner = current_rank_of_item.unsqueeze(-1)
+            logits_head = head(x)
+            logits_head = logits_head  # Mask out already chosen items
+            exp_logits = torch.exp(logits_head) * lambda_vector
+            p = exp_logits / torch.sum(exp_logits, dim=-1, keepdim=True)
+            lambda_vector[torch.arange(x.shape[0]), item_head_winner.squeeze()] = 0
+            probs.append(p[:, item_head_winner])
+        probs = torch.stack(probs, dim=1)  # (batch_size, n_items, n_items)
+        probs = probs.view(probs.shape[0], -1)
+        return probs.prod(dim=-1)
+
+    def predict(self, x, method: str = "lr"):
+        if method == "lr":
+            return self.predict_lr(x)
+        elif method == "plr":
+            return self.predict_plr(x)
+        else:
+            raise ValueError("Method must be 'lr' or 'plr'")
+
+    @torch.no_grad()
+    def predict_lr(self, x):
+        prediction = torch.zeros((x.shape[0], self.n_items), dtype=torch.long)
+        probs = self.predict_proba(x)
+        position_probs_to_mask = torch.ones((x.shape[0], self.n_items), dtype=torch.long)
+        
+        for position in range(self.n_items):
+            position_probs = probs[:, position * self.n_items : (position + 1) * self.n_items] # get the probability of the current position for all items
+            remain_probs_after_mask = 1 - (position_probs * position_probs_to_mask).sum(dim=-1, keepdim=True) # remaining probability mass after masking already chosen items
+            position_probs = (position_probs + remain_probs_after_mask / (self.n_items - position)) * position_probs_to_mask # redistribute remaining probability mass to unchosen items. Masking already chosen items
+            item = torch.argmax(position_probs, dim=-1)
+            prediction[:, item] = position + 1
+            position_probs_to_mask[:, item] = 0
+            
+
+        # Make sure it is label ranking
+        for i in range(prediction.shape[0]):
+            # print("PREDICTION: ", prediction[i])
+            unique, counts = torch.unique(prediction[i], return_counts=True)
+            duplicates = unique[counts > 1]
+            # print("DUPLICATES: ", duplicates)
+            for dup in duplicates:
+                dup_indices = (prediction[i] == dup).nonzero(as_tuple=True)[0]
+                probs_of_dup = torch.tensor(
+                    [
+                        probs[i, idx * self.n_items : (idx + 1) * self.n_items][dup - 1]
+                        for idx in dup_indices
+                    ]
+                )
+                sorted_indices = torch.argsort(probs_of_dup, descending=True)
+                for offset, idx in enumerate(dup_indices[sorted_indices]):
+                    prediction[i, idx] = dup + offset
+
+        # Ensure ranks are increasing +1 each step
+        for i in range(prediction.shape[0]):
+            sorted_indices = torch.argsort(prediction[i])
+            prediction[i, sorted_indices] = torch.arange(
+                1, self.n_items + 1, dtype=prediction.dtype
+            )
+
+        return prediction
+
+    @torch.no_grad()
+    def predict_plr(self, x):
         prediction = torch.zeros((x.shape[0], self.n_items), dtype=torch.long)
         probs = self.predict_proba(x)
 
@@ -96,7 +166,7 @@ class PreferenceModel(nn.Module):
 
         gather_indices = torch.arange(self.n_items) * self.n_items + (rank - 1)
         probs_of_rank = torch.gather(probs, 1, gather_indices)
-        return torch.sum(probs_of_rank, dim=-1)
+        return torch.prod(probs_of_rank, dim=-1)
 
 
 class PlackettLuceModel(nn.Module):
@@ -141,23 +211,43 @@ class PlackettLuceModel(nn.Module):
 
     def predict_proba_ranking(self, x, rank):
         logits = self.forward(x)
-        exp_logits = torch.exp(logits)
-        if len(rank.shape) == 1:
-            rank = rank.expand(x.shape[0], -1)
-        prob = torch.ones(x.shape[0])
-        for i in range(self.n_items):
-            denom = torch.sum(exp_logits * (rank == i + 1), dim=-1)
-            prob *= exp_logits[:, i] / denom
-        return prob
+        return self.predict_proba_ranking_logits(logits, rank)
 
 
-class PlackettLuceLoss(nn.Module):
-    def __init__(self):
-        super(PlackettLuceLoss, self).__init__()
+class MallowsModel(nn.Module):
+    def __init__(self, reference_ranking: torch.Tensor, dispersion:float, distance_metric: str = "kendall"):
+        self.reference_ranking = reference_ranking
+        self.n_items = reference_ranking.shape[0]
+        self.dispersion = np.exp(-dispersion)
+        self.distance_metric = distance_metric
+        self.normalization_constant = self.compute_normalization_constant()
 
-    def forward(self, y_true, logits, model):
-        y_pred_probs_true_ranks = model.predict_proba_ranking_logits(logits, y_true)
-        loss = -torch.log(
-            y_pred_probs_true_ranks + 1e-10
-        )  # Add a small constant to avoid log(0)
-        return torch.mean(loss)
+    def compute_distance(self, rank1: torch.Tensor):
+        if self.distance_metric == "kendall":
+            distance = 0
+            for i in range(self.n_items):
+                for j in range(i + 1, self.n_items):
+                    if (rank1[i] - rank1[j]) * (self.reference_ranking[i] - self.reference_ranking[j]) < 0:
+                        distance += 1
+            return distance
+        else:
+            raise NotImplementedError(f"Distance metric {self.distance_metric} not implemented.")
+
+    def compute_normalization_constant(self):
+        constant = 1.0
+        for j in range(1, self.n_items + 1):
+
+            constant *= 1 + sum([self.dispersion ** k for k in range(1, j)])
+        return 1/constant
+
+    def forward(self, x):
+        return None
+
+    def predict_proba_ranking(self, _, ranking: torch.Tensor):
+        if len(ranking.shape) == 1:
+            ranking = ranking.expand(1, -1)
+        distance_to_reference = torch.tensor(
+            [self.compute_distance(r) for r in ranking]
+        )
+        probs = self.normalization_constant * (self.dispersion ** distance_to_reference)
+        return probs
