@@ -4,6 +4,8 @@ from math import factorial
 
 
 class PlackettLuceLoss(nn.Module):
+    """Negative log-likelihood loss for the Plackett-Luce model"""
+
     def __init__(self):
         super(PlackettLuceLoss, self).__init__()
 
@@ -16,6 +18,8 @@ class PlackettLuceLoss(nn.Module):
 
 
 class PlackettLuceBrierPreferenceLoss(nn.Module):
+    """Adapted BrierPreferenceLoss to Plackett-Luce model probability function"""
+
     def __init__(self) -> None:
         super(PlackettLuceBrierPreferenceLoss, self).__init__()
 
@@ -56,7 +60,9 @@ class PlackettLuceBrierPreferenceLoss(nn.Module):
 
 
 class BrierPreferenceLoss(nn.Module):
-    def __init__(self, maximal_number_of_ranks:int):
+    """Based on the Brier score from "From Classification Accuracy to Proper Scoring Rules: Elicitability of Probabilistic Top List Predictions" """
+
+    def __init__(self, maximal_number_of_ranks: int):
         super(BrierPreferenceLoss, self).__init__()
         self.maximal_number_of_ranks = maximal_number_of_ranks
 

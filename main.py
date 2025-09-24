@@ -124,31 +124,30 @@ if __name__ == "__main__":
         X, y, test_size=0.2, random_state=42
     )
 
-    baseline_estimator = PairwisePartialLabelRanker(
-        estimator=DecisionTreeClassifier(), n_jobs=-1
-    )
-    baseline_estimator.fit(X_train, y_train)
-    y_baseline_pred = baseline_estimator.predict(X_test)
-
+    # Model Architecture and Training
     input_dim = X.shape[1]
     hidden_dims = [64, 32]
     output_dim = y.shape[1] ** 2
     n_items = y.shape[1]
 
+    # Preference Model with Brier Loss. Has as many outputs as there are items times positions
     preference_model = PreferenceModel(input_dim, hidden_dims, output_dim)
     criterion = BrierPreferenceLoss(maximal_number_of_ranks=factorial(n_items))
     optimizer = torch.optim.Adam(preference_model.parameters(), lr=0.001)
 
+    # Plackett-Luce Model with standard PL Loss
     placket_luce_model = PlackettLuceModel(input_dim, hidden_dims, y.shape[1])
     placket_criterion = PlackettLuceLoss()
     placket_optimizer = torch.optim.Adam(placket_luce_model.parameters(), lr=0.001)
 
+    # Plackett-Luce Model with Brier Loss
     placket_luce_model_brier = PlackettLuceModel(input_dim, hidden_dims, y.shape[1])
     placket_brier_criterion = PlackettLuceBrierPreferenceLoss()
     placket_brier_optimizer = torch.optim.Adam(
         placket_luce_model_brier.parameters(), lr=0.001
     )
 
+    # Mallows Model for reference
     unique_rankings = np.unique(y_train, axis=0)
     most_occurrent_ranking = unique_rankings[
         np.argmax(
@@ -156,7 +155,9 @@ if __name__ == "__main__":
         )
     ]
     print("Most occurrent ranking in training set: ", most_occurrent_ranking)
-    mallows_model = MallowsModel(reference_ranking=torch.tensor(most_occurrent_ranking), dispersion=1)
+    mallows_model = MallowsModel(
+        reference_ranking=torch.tensor(most_occurrent_ranking), dispersion=1
+    )
     num_epochs = 100
     batch_size = 16
 
@@ -165,14 +166,7 @@ if __name__ == "__main__":
     X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
     y_test_tensor = torch.tensor(y_test, dtype=torch.long)
 
-    # test_example = X_test_tensor[0:1]
-    # y_pred = preference_model.predict(test_example)
-    # y_pred_probs = preference_model.predict_proba(test_example)
-    # print("Test Example Prediction: ", y_pred)
-    # print("Test Example Prediction Probabilities: ", y_pred_probs)
-    # loss = criterion(y_test_tensor, y_pred, y_pred_probs)
-    # print("Test Example Loss: ", loss.item())
-
+    ####### Training Loop #######
     torch.manual_seed(42)
     for epoch in range(num_epochs):
         X_batch_indices = torch.randperm(X_train_tensor.size(0))
@@ -201,12 +195,18 @@ if __name__ == "__main__":
 
             preference_model.train()
             optimizer.zero_grad()
-            y_pred = preference_model.predict(X_batch,method="lr")
+            y_pred = preference_model.predict(X_batch, method="lr")
             y_pred_probs = preference_model.predict_proba(X_batch)
             loss_pref = criterion(y_batch, y_pred, y_pred_probs)
             loss_pref.backward()
             optimizer.step()
 
+    ####### Evaluation #######
+    baseline_estimator = PairwisePartialLabelRanker(
+        estimator=DecisionTreeClassifier(), n_jobs=-1
+    )
+    baseline_estimator.fit(X_train, y_train)
+    y_baseline_pred = baseline_estimator.predict(X_test)
     # Make the models eval mode for evaluation
     placket_luce_model.eval()
     preference_model.eval()
@@ -239,6 +239,7 @@ if __name__ == "__main__":
             f"Kendal Distance of Baseline on Test Set: {kendal_distance(y_test_tensor, torch.tensor(y_baseline_pred, dtype=torch.long))}"
         )
 
+    ####### Ranking Predictions (make sure the models have well-defined probabilities) #######
     possible_rankings = list(itertools.permutations(range(1, y.shape[1] + 1)))
     sum_of_probs = []
     for ranking in possible_rankings:
@@ -254,14 +255,13 @@ if __name__ == "__main__":
         prob_mallows = mallows_model.predict_proba_ranking(
             None, torch.tensor(ranking)
         ).item()
-        sum_of_probs.append(
-            (prob_pl, prob_pl_brier, prob_pref, prob_mallows)
-        )
-    print("Sum of probabilities for all possible rankings (PL, PL Brier, Preference Model, Mallows): ", np.sum(sum_of_probs,axis=0))
+        sum_of_probs.append((prob_pl, prob_pl_brier, prob_pref, prob_mallows))
+    print(
+        "Sum of probabilities for all possible rankings (PL, PL Brier, Preference Model, Mallows): ",
+        np.sum(sum_of_probs, axis=0),
+    )
 
-    # possible_rankings = torch.unique(
-    #     y_test_tensor, dim=0
-    # ).tolist()  # Compute only for the rankings present in the test set
+    ####### Class-wise ECE Calibration #######
     print("Possible Rankings: ", possible_rankings)
     print("Number of Possible Rankings: ", len(possible_rankings))
     ece_pl = get_classwise_ece(
@@ -286,6 +286,9 @@ if __name__ == "__main__":
     )
     print(f"Class-wise ECE (Preference Model): {ece_prefence_model}")
     ece_mallows = get_classwise_ece(
-        possible_rankings, X_test_tensor, y_test_tensor, mallows_model.predict_proba_ranking
+        possible_rankings,
+        X_test_tensor,
+        y_test_tensor,
+        mallows_model.predict_proba_ranking,
     )
     print(f"Class-wise ECE (Mallows Model): {ece_mallows}")
