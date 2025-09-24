@@ -113,22 +113,23 @@ def get_classwise_ece(
 
 
 if __name__ == "__main__":
+    ###### Configurations ######
     torch.manual_seed(42)
     np.random.seed(42)
+    num_epochs = 100
+    batch_size = 16
+
     dataset_name = "iris"
     X, y = load_lr_data(dataset_name)
-    print(
-        f"Loaded dataset '{dataset_name}' with {X.shape[0]} samples and {X.shape[1]} features."
-    )
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
     # Model Architecture and Training
     input_dim = X.shape[1]
     hidden_dims = [64, 32]
     output_dim = y.shape[1] ** 2
     n_items = y.shape[1]
+
+    print(
+        f"Loaded dataset '{dataset_name}' with {X.shape[0]} samples and {X.shape[1]} features."
+    )
 
     # Preference Model with Brier Loss. Has as many outputs as there are items times positions
     preference_model = PreferenceModel(input_dim, hidden_dims, output_dim)
@@ -158,8 +159,15 @@ if __name__ == "__main__":
     mallows_model = MallowsModel(
         reference_ranking=torch.tensor(most_occurrent_ranking), dispersion=1
     )
-    num_epochs = 100
-    batch_size = 16
+
+    # RPC Baseline with Decision Tree
+    baseline_estimator = PairwisePartialLabelRanker(
+        estimator=DecisionTreeClassifier(), n_jobs=-1
+    )
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
     y_train_tensor = torch.tensor(y_train, dtype=torch.long)
@@ -201,16 +209,14 @@ if __name__ == "__main__":
             loss_pref.backward()
             optimizer.step()
 
-    ####### Evaluation #######
-    baseline_estimator = PairwisePartialLabelRanker(
-        estimator=DecisionTreeClassifier(), n_jobs=-1
-    )
     baseline_estimator.fit(X_train, y_train)
-    y_baseline_pred = baseline_estimator.predict(X_test)
-    # Make the models eval mode for evaluation
+
+    ####### Evaluation #######
     placket_luce_model.eval()
     preference_model.eval()
     placket_luce_model_brier.eval()
+
+    y_baseline_pred = baseline_estimator.predict(X_test)
     with torch.no_grad():
         y_test_pred = placket_luce_model.predict(X_test_tensor)
         logits = placket_luce_model(X_test_tensor)
