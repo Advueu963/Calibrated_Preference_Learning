@@ -31,11 +31,6 @@ class PlackettLuceBrierPreferenceLoss(nn.Module):
         valid_predictions = rank_probs >= (1 - rank_probs) / (
             factorial(y_true.shape[1]) - 1
         )  # valid if the predicted rank is more probable than random guessing for the remaining ranks
-
-        valid_predictions = rank_probs >= (1 - rank_probs) / (
-            factorial(y_true.shape[1]) - 1
-        )  # valid if the predicted rank is more probable than random guessing for the remaining ranks
-
         # print("SUMMED PROBS OF PRED RANKS: ", probs_of_pred_ranks)
         loss = (
             1
@@ -51,22 +46,27 @@ class PlackettLuceBrierPreferenceLoss(nn.Module):
         loss = torch.where(
             valid_predictions,
             loss,
-            (1 - 1 / (factorial(y_true.shape[1]) - 1))
-            + loss,  # Penalize invalid predictions
+            (1 - 1 / (factorial(y_true.shape[1]) - 1)) + loss,  # Penalize invalid predictions
         )
 
         # print("LOSS: ", loss.shape)
         return torch.mean(loss)
 
 
+
 class BrierPreferenceLoss(nn.Module):
     """Based on the Brier score from "From Classification Accuracy to Proper Scoring Rules: Elicitability of Probabilistic Top List Predictions" """
 
-    def __init__(self, maximal_number_of_ranks: int):
-        super(BrierPreferenceLoss, self).__init__()
-        self.maximal_number_of_ranks = maximal_number_of_ranks
+    def __init__(self, maximal_t_list_size: int):
+        """Brier Preference Loss for ranking tasks
 
-    def forward(self, y_true, y_pred, y_pred_probs):
+        Args:
+            maximal_t_list_size (int): The maximal number of ranks which can be modelled. This does not have to be m!. More generally, this is the number of different possible outcomes, given the underlying ranking model.
+        """
+        super(BrierPreferenceLoss, self).__init__()
+        self.maximal_t_list_size = maximal_t_list_size
+
+    def forward(self, y_true, y_pred, y_pred_probs, probs_of_ranks):
 
         # print("Y_TRUE: ", y_true)
         # print("Y_PRED: ", y_pred)
@@ -74,36 +74,50 @@ class BrierPreferenceLoss(nn.Module):
         mask = (y_true == y_pred).all(dim=-1)
         # print("MASK: ", mask)
         # print("Y_PRED SHAPE: ", y_pred)
-        gather_indices = torch.arange(y_pred.shape[1]) * y_pred.shape[1] + (
-            y_pred - 1
-        )  # The first term is the offset for each item as the first 0,...,(n_items-1) entries correspond to item 1, the next n_items entries to item 2, etc.
-        # print("GATHER INDICES: ", gather_indices)
-        probs_of_pred_ranks = torch.gather(y_pred_probs, 1, gather_indices)
-        # print("PROBS OF PRED RANKS: ", probs_of_pred_ranks)
-        rank_probs = torch.sum(probs_of_pred_ranks, dim=-1)
+        rank_probs = probs_of_ranks(y_pred_probs, y_pred)
 
         valid_predictions = rank_probs >= (1 - rank_probs) / (
-            self.maximal_number_of_ranks - 1
+            self.maximal_t_list_size - 1
         )  # valid if the predicted rank is more probable than random guessing for the remaining ranks
 
         # print("SUMMED PROBS OF PRED RANKS: ", probs_of_pred_ranks)
         loss = (
             1
             + rank_probs**2
-            + (1 - rank_probs) ** 2 / (self.maximal_number_of_ranks - 1)
+            + (1 - rank_probs) ** 2 / (self.maximal_t_list_size - 1)
             - 2
             * torch.where(
                 mask,
                 rank_probs,
-                (1 - rank_probs) / (self.maximal_number_of_ranks - 1),
+                (1 - rank_probs) / (self.maximal_t_list_size - 1),
             )
         )
         loss = torch.where(
             valid_predictions,
             loss,
-            (10 - 1 / (self.maximal_number_of_ranks - 1))
-            * loss,  # Penalize invalid predictions
+            (1 - 1 / (self.maximal_t_list_size - 1)) + loss,  # Penalize invalid predictions
         )
 
         # print("LOSS: ", loss.shape)
+        return torch.mean(loss)
+
+class LogLossPreferenceLoss(nn.Module):
+    """Log Loss for preference learning"""
+
+    def __init__(self, maximal_t_list_size: int) -> None:
+        super(LogLossPreferenceLoss, self).__init__()
+        self.maximal_t_list_size = maximal_t_list_size
+    def forward(self, y_true, y_pred, y_pred_probs, probs_of_ranks):
+        mask = (y_true == y_pred).all(dim=-1)
+
+        rank_probs = probs_of_ranks(y_pred_probs, y_pred)
+
+        loss = -torch.log(
+            torch.where(
+                mask,
+                -torch.log(rank_probs + 1e-10),
+                torch.log(torch.tensor(self.maximal_t_list_size - 1)) - torch.log(1- rank_probs + 1e-10),
+            )
+        )  # Add a small constant to avoid log(0)
+
         return torch.mean(loss)

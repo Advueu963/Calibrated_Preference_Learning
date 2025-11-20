@@ -11,3 +11,8 @@ wheels/
 
 # VS Code settings
 .vscode/
+.DS_Store
+
+
+# Pdf Files
+Calibratoin_Label_Ranking/
