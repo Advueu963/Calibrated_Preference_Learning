@@ -1,3 +1,4 @@
+from itertools import permutations
 import math
 import torch
 import torch.nn as nn
@@ -60,6 +61,7 @@ class PreferenceModel(nn.Module):
         x = self.mlp(x)
         x = self.head(x)
         if self.unseen_weights is not None:
+            #print("UNSEEN WEIGHTS: ", self.unseen_weights)
             x = torch.hstack(
                 (
                     x,
@@ -94,6 +96,20 @@ class PreferenceModel(nn.Module):
         rank_probs = torch.gather(probs, 1, idx_ranks.unsqueeze(1)).squeeze(1)
         return rank_probs
 
+    def predict_ranking_distribution(self, x):
+        logits = self.forward(x).clamp(min=1e-6)
+        rankings = permutations(range(1, self.n_items + 1))
+        distribution = {}
+        for rank in rankings:
+            rank_tensor = (
+                torch.tensor(rank, device=logits.device)
+                .unsqueeze(0)
+                .expand(x.shape[0], -1)
+            )
+            probs = self.predict_proba_ranking_logits(logits, rank_tensor)
+            distribution[rank] = probs.detach()
+        return distribution
+
     def predict(self, x):
         logits = self.forward(x)
         probs = nn.functional.softmax(logits, dim=-1)
@@ -114,6 +130,7 @@ class PreferenceModel(nn.Module):
 class PlackettLuceModelWeights(nn.Module):
     def __init__(self, weights, n_items: int):
         super(PlackettLuceModelWeights, self).__init__()
+        self.n_items = n_items
         self.weights = torch.tensor(weights, dtype=torch.float32)
 
     def forward(self, x):
@@ -143,6 +160,20 @@ class PlackettLuceModelWeights(nn.Module):
         probs = (weights / cum_sums).prod(dim=-1)
         return probs
 
+    def predict_ranking_distribution(self, x):
+        logits = self.forward(x).clamp(min=1e-6)
+        rankings = permutations(range(1, self.n_items + 1))
+        distribution = {}
+        for rank in rankings:
+            rank_tensor = (
+                torch.tensor(rank, device=logits.device)
+                .unsqueeze(0)
+                .expand(x.shape[0], -1)
+            )
+            probs = self.predict_proba_ranking_logits(logits, rank_tensor)
+            distribution[rank] = probs.detach()
+        return distribution
+
     def predict_proba_ranking(self, x, rank):
         logits = self.forward(x)
         return self.predict_proba_ranking_logits(logits, rank)
@@ -157,52 +188,63 @@ class PlackettLuceModel(nn.Module):
 
     def forward(self, x):
         x = self.mlp(x)
+        x = x - x.max(dim=-1, keepdim=True).values  # Improve numerical stability
         x = nn.functional.softmax(x, dim=-1)
-        # x = nn.functional.softplus(x) + 1e-6  # Ensure positivity
-        return x
+        return x.clamp_min(1e-9)
 
     def predict(self, x):
         logits = self.forward(x)
-        exp_logits = torch.exp(logits)
-        ranking = torch.argsort(exp_logits, dim=-1, descending=True) + 1
+        # exp_logits = torch.exp(logits)
+        ranking = torch.argsort(logits, dim=-1, descending=True) + 1
         return ranking
 
     def predict_proba(self, x):
         logits = self.forward(x)
-        exp_logits = torch.exp(logits)
+        # exp_logits = torch.exp(logits)
         cumulative_sums = torch.cumsum(
-            torch.sort(exp_logits, dim=-1, descending=False), dim=-1
+            torch.sort(logits, dim=-1, descending=False), dim=-1
         )
-        exp_logits, _ = torch.sort(exp_logits, dim=-1, descending=True)
-        exp_logits = exp_logits / cumulative_sums
-        probs = torch.prod(exp_logits, dim=-1, keepdim=True)
+        logits, _ = torch.sort(logits, dim=-1, descending=True)
+        logits = logits / cumulative_sums
+        probs = torch.prod(logits, dim=-1, keepdim=True)
         return probs
 
     def predict_proba_ranking_logits(self, logits, rank):
         # Restrict logits to cause no numerical issues
-        un_exp_logits = torch.exp(logits)  # Use sqrt to reduce range of logits
-        exp_logits = un_exp_logits
+        # un_exp_logits = torch.exp(logits)  # Use sqrt to reduce range of logits
+        # exp_logits = un_exp_logits
         # print("EXP LOGITS: ", exp_logits)
         if len(rank.shape) == 1:
             rank = rank.expand(logits.shape[0], -1)
         idx_rank_sort = torch.argsort(rank, dim=-1, descending=True)
-        exp_logits = torch.gather(
-            exp_logits, 1, idx_rank_sort
+        logits = torch.gather(
+            logits, 1, idx_rank_sort
         )  # the exps that the highest rank (1) comes last
-        cum_sums = torch.cumsum(exp_logits, dim=-1)
-        probs = (exp_logits / cum_sums).prod(dim=-1)
+        cum_sums = torch.cumsum(logits, dim=-1)
+        probs = (logits / cum_sums).prod(dim=-1)
 
         # print("PROBS: ", probs)
         if any(probs.isnan()):
             print("LOGITS: ", logits)
             print("RANK: ", rank)
-            print("UN EXP LOGITS: ", un_exp_logits)
-            print("UN MAX LOGITS: ", torch.max(un_exp_logits, dim=-1, keepdim=True)[0])
-            print("EXP LOGITS: ", exp_logits)
             print("CUM SUMS: ", cum_sums)
             print("PROBS: ", probs)
             raise ValueError("NaN values in probabilities.")
         return probs
+
+    def predict_ranking_distribution(self, x):
+        logits = self.forward(x).clamp(min=1e-6)
+        rankings = permutations(range(1, self.n_items + 1))
+        distribution = {}
+        for rank in rankings:
+            rank_tensor = (
+                torch.tensor(rank, device=logits.device)
+                .unsqueeze(0)
+                .expand(x.shape[0], -1)
+            )
+            probs = self.predict_proba_ranking_logits(logits, rank_tensor)
+            distribution[rank] = probs.detach()
+        return distribution
 
     def predict_proba_ranking(self, x, rank):
         logits = self.forward(x).clamp(min=1e-6)
@@ -258,3 +300,14 @@ class MallowsModel(nn.Module):
 
     def predict(self, x):
         return self.reference_ranking.expand(x.shape[0], -1).long()
+
+    def predict_ranking_distribution(self, x):
+        rankings = permutations(range(1, self.n_items + 1))
+        distribution = {}
+        for rank in rankings:
+            rank_tensor = (
+                torch.tensor(rank, device=x.device).unsqueeze(0).expand(x.shape[0], -1)
+            )
+            probs = self.predict_proba_ranking(x, rank_tensor)
+            distribution[rank] = probs.detach()
+        return distribution

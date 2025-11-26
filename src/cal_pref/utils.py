@@ -1,11 +1,18 @@
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.discriminant_analysis import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 import torch
 import itertools
 import matplotlib.pyplot as plt
 from .preference_models import PlackettLuceModelWeights, MallowsModel
 
-#### General Utility Functions ####
+########################################
+## Synthetic Data Generation Function #
+######################################
 
 
 def synthetic_data(rng, name, num_samples=1000, num_features=5, num_items=3):
@@ -27,6 +34,11 @@ def synthetic_data(rng, name, num_samples=1000, num_features=5, num_items=3):
                 for ranking in possible_rankings
             ]
         )
+        rank_to_prob = {
+            ranking: prob
+            for ranking, prob in zip(possible_rankings, probs_of_rankings)
+        }
+        # print("Ranking to Probability Mapping: ", rank_to_prob)
         # normalize numerical issues
         probs_of_rankings = probs_of_rankings / np.sum(probs_of_rankings)
     elif name == "synthetic_mallows_probs":
@@ -53,79 +65,14 @@ def synthetic_data(rng, name, num_samples=1000, num_features=5, num_items=3):
     relation_probs_ranks = {
         ranking: prob for ranking, prob in zip(possible_rankings, probs_of_rankings)
     }
-    print("Probability Distribution: ", relation_probs_ranks)
-    print("True probabilities of rankings: ", probs_of_rankings)
-    print("Sum of true probabilities of rankings: ", np.sum(probs_of_rankings))
+    # print("Probability Distribution: ", relation_probs_ranks)
+    # print("True probabilities of rankings: ", probs_of_rankings)
+    
+    # print("Sum of true probabilities of rankings: ", np.sum(probs_of_rankings))
     X = np.ones((num_samples, num_features))
     y = rng.choice(len(possible_rankings), size=num_samples, p=probs_of_rankings)
     y = np.array([possible_rankings[i] for i in y])
     return X, y, probs_of_rankings
-
-
-def calculate_ece(
-    ece_func,
-    preference_model,
-    placket_luce_model,
-    placket_luce_model_brier,
-    mallows_model,
-    X_test_tensor,
-    y_test_tensor,
-    placket_luce_model_baseline,
-    possible_rankings,
-):
-    """Calculate the ECE for different models.
-
-    Args:
-        ece_func (callable): A function to compute the ECE.
-        preference_model (nn.Module): The preference model.
-        placket_luce_model (nn.Module): The Plackett-Luce model.
-        placket_luce_model_brier (nn.Module): The Plackett-Luce model with Brier loss.
-        mallows_model (nn.Module): The Mallows model.
-        X_test_tensor (torch.Tensor): The test input features.
-        y_test_tensor (torch.Tensor): The test target rankings.
-        placket_luce_model_baseline (nn.Module): The baseline Plackett-Luce model.
-        possible_rankings (list): The list of possible rankings.
-
-    Returns:
-        tuple: ECE scores for each model.
-    """
-    print("Number of Possible Rankings: ", len(possible_rankings))
-    ece_pl = ece_func(
-        possible_rankings,
-        X_test_tensor,
-        y_test_tensor,
-        placket_luce_model.predict_proba_ranking,
-    )
-    print(f"(PL): {ece_pl}")
-    ece_pl_brier = ece_func(
-        possible_rankings,
-        X_test_tensor,
-        y_test_tensor,
-        placket_luce_model_brier.predict_proba_ranking,
-    )
-    print(f"(PL Brier): {ece_pl_brier}")
-    ece_prefence_model = ece_func(
-        possible_rankings,
-        X_test_tensor,
-        y_test_tensor,
-        preference_model.predict_proba_ranking,
-    )
-    print(f"(Preference Model): {ece_prefence_model}")
-    ece_mallows = ece_func(
-        possible_rankings,
-        X_test_tensor,
-        y_test_tensor,
-        mallows_model.predict_proba_ranking,
-    )
-    print(f"(Mallows Model): {ece_mallows}")
-    ece_baseline = ece_func(
-        possible_rankings,
-        X_test_tensor,
-        y_test_tensor,
-        placket_luce_model_baseline.predict_proba_ranking,
-    )
-    print(f"(Baseline RPC): {ece_baseline}")
-    return ece_pl, ece_pl_brier, ece_prefence_model, ece_mallows, ece_baseline
 
 
 def visualize_per_class_probs(
@@ -219,15 +166,60 @@ def load_lr_data(dataset_name):
         "vowel",
         "wine",
         "yeast",
+        "political",
     ]:
         raise ValueError(
             "Invalid dataset name. Choose from 'authorship', 'glass', 'iris', 'letter', 'libras', 'movies', 'pendigits', 'segment', 'vehicle', 'vowel', 'wine', 'yeast'."
         )
 
-    data = pd.read_csv(f"lr_plr_data/LR_DATA/{dataset_name}.csv")
-    target_columns = [col for col in data.columns if col.startswith("L")]
-    X = data.drop(columns=target_columns).values
-    y = data[target_columns].values
+    if dataset_name == "political":
+        dataFrame = pd.read_csv(f"lr_plr_data/LR_DATA/political.csv")
+
+        # Split in Features and Targets
+        X, Y = dataFrame.iloc[:, :-6], dataFrame.iloc[:, -6:]
+
+        # Extract the numpy arrays
+        X_data = X.values
+        Y_data = Y.values
+
+        # Build Numerical Preprocessor
+        numerical_cols = [
+            i
+            for i, colname in enumerate(X.columns)
+            if X[colname].dtype in ["int64", "float64"]
+        ]
+        numerical_transformer = Pipeline(
+            steps=[
+                ("imputer_nan", SimpleImputer(strategy="most_frequent")),
+                ("impute_977", SimpleImputer(missing_values=977, strategy="median")),
+                ("scaler", StandardScaler()),
+            ]
+        )
+
+        # Build Categorical Preprocessor
+        categorical_cols = [
+            i for i, colname in enumerate(X.columns) if X[colname].dtype == "object"
+        ]
+        categorical_transformer = Pipeline(
+            steps=[
+                ("imputer_nan", SimpleImputer(strategy="most_frequent")),
+                ("onehot", OneHotEncoder(handle_unknown="ignore")),
+            ]
+        )
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ("numerical", numerical_transformer, numerical_cols),
+                ("categorical", categorical_transformer, categorical_cols),
+            ]
+        )
+        X = preprocessor.fit_transform(X)
+        y = Y_data
+
+    else:
+        data = pd.read_csv(f"lr_plr_data/LR_DATA/{dataset_name}.csv")
+        target_columns = [col for col in data.columns if col.startswith("L")]
+        X = data.drop(columns=target_columns).values
+        y = data[target_columns].values
     return X, y
 
 
@@ -245,162 +237,6 @@ def kendal_distance(y_true, y_pred, normalize=True):
         return discordant_pairs / (y_true.shape[0] * total_pairs)
     else:
         return discordant_pairs
-
-
-def get_classwise_ece(
-    possible_rankings,
-    X_test_tensor,
-    y_test_tensor,
-    rank_prob_func,
-    equal_frequency_bins=False,
-    bin_size=10,
-):
-    """Computes ECE in a class-wise manner.
-
-    Args:
-        possible_rankings (list): A list of possible rankings.
-        X_test_tensor (torch.Tensor): The input features for the test set.
-        y_test_tensor (torch.Tensor): The true rankings for the test set.
-        rank_prob_func (callable): A function that computes ranking probabilities.
-        equal_frequency_bins (bool, optional): Whether to use equal frequency bins. Defaults to False.
-        bin_size (int, optional): The number of bins to use. Defaults to 10.
-
-    Returns:
-        float: The ECE score.
-    """
-    ECE_classwise = 0.0
-    for i, ranking in enumerate(possible_rankings):
-        # print(f"Ranking {i + 1}: {ranking}")
-        n_instances_total = y_test_tensor.shape[0]
-        mask = (y_test_tensor == torch.tensor(ranking)).all(dim=-1)
-        y_pred_rank_probs = rank_prob_func(X_test_tensor, torch.tensor(ranking))
-
-        bin_size = 10
-        probs_range = y_pred_rank_probs.max() - y_pred_rank_probs.min()
-        # print(f"Prob range for ranking {ranking}: {y_pred_rank_probs.min().item()} - {y_pred_rank_probs.max().item()} (range: {probs_range.item()})")
-        if equal_frequency_bins and probs_range > 0:
-            sorted_probs, _ = torch.sort(y_pred_rank_probs)
-            bins = [
-                sorted_probs[int(i * n_instances_total / bin_size)].item()
-                for i in range(bin_size - 1)
-            ] + [sorted_probs[-1].item() + 1e-6]
-            bins = torch.tensor(bins)
-        else:
-            bins = torch.linspace(0, 1, bin_size)
-        # print(f"Bins for ranking {ranking}: {bins}")
-        if len(bins) <= 1:
-            bin_indices = torch.zeros_like(y_pred_rank_probs, dtype=torch.long)
-        else:
-            bin_indices = torch.bucketize(y_pred_rank_probs, bins)
-
-        ECE_ranking = 0.0
-        for bin_idx in range(bin_size):
-            bin_mask = bin_indices == bin_idx
-            freq_true_rank_in_bin = (
-                (mask & bin_mask).sum().float() / (bin_mask.sum().float() + 1e-6)
-            ).item()
-            mean_prob_in_bin = (
-                torch.mean(y_pred_rank_probs[bin_mask]).item()
-                if torch.sum(bin_mask) > 0
-                else 0.0
-            )
-            count_in_bin = torch.sum(bin_mask).item()
-            ECE_ranking += (count_in_bin / n_instances_total) * abs(
-                freq_true_rank_in_bin - mean_prob_in_bin
-            )
-        #     print(
-        #         "Ranking:",
-        #         ranking,
-        #         " Bin:",
-        #         bin_idx,
-        #         " Count in bin:",
-        #         count_in_bin,
-        #         " Freq true rank in bin:",
-        #         freq_true_rank_in_bin,
-        #         " Mean prob in bin:",
-        #         mean_prob_in_bin,
-        #     )
-        # print("Ranking:", ranking, " ECE:", ECE_ranking)
-        ECE_classwise += ECE_ranking / len(possible_rankings)
-    return ECE_classwise
-
-
-def get_rankwise_ece(
-    possible_rankings,
-    X_test_tensor,
-    y_test_tensor,
-    rank_prob_func,
-    equal_frequency_bins=False,
-    bin_size=10,
-    T=1,
-):
-    """Computes the ECE based on the top-k definition.
-
-    Args:
-        possible_rankings (list): A list of possible rankings.
-        X_test_tensor (torch.Tensor): The input features for the test set.
-        y_test_tensor (torch.Tensor): The true rankings for the test set.
-        rank_prob_func (callable): A function that computes ranking probabilities.
-        equal_frequency_bins (bool, optional): Whether to use equal frequency bins. Defaults to False.
-        bin_size (int, optional): The number of bins to use. Defaults to 10.
-
-    Returns:
-        float: The ECE score.
-    """
-    ECE_rankwise = 0.0
-    for i, ranking in enumerate(possible_rankings):
-        # print(f"Ranking {i + 1}: {ranking}")#
-        ranking = torch.tensor(ranking)
-        n_instances_total = y_test_tensor.shape[0]
-        mask = (y_test_tensor[:, :T] == ranking[0:T]).all(dim=-1)
-
-        rankings_containing_first_T = [
-            r for r in possible_rankings if (torch.tensor(r[0:T]) == ranking[0:T]).all()
-        ]
-        y_pred_rank_probs = torch.zeros(n_instances_total)
-        for r in rankings_containing_first_T:
-            y_pred_rank_probs += rank_prob_func(X_test_tensor, torch.tensor(r))
-
-        bin_size = 10
-        probs_range = y_pred_rank_probs.max() - y_pred_rank_probs.min()
-        # print(
-        #     f"Prob range for ranking {ranking}: {y_pred_rank_probs.min().item()} - {y_pred_rank_probs.max().item()} (range: {probs_range.item()})"
-        # )
-        if equal_frequency_bins and probs_range > 0:
-            sorted_probs, _ = torch.sort(y_pred_rank_probs)
-            bins = [
-                sorted_probs[int(i * n_instances_total / bin_size)].item()
-                for i in range(bin_size - 1)
-            ] + [sorted_probs[-1].item() + 1e-6]
-            bins = torch.tensor(bins)
-        else:
-            bins = torch.linspace(0, 1, bin_size)
-
-        # print(f"Bins for ranking {ranking}: {bins}")
-        if len(bins) <= 1:
-            bin_indices = torch.zeros_like(y_pred_rank_probs, dtype=torch.long)
-        else:
-            bin_indices = torch.bucketize(y_pred_rank_probs, bins)
-
-        ECE_ranking = 0.0
-        for bin_idx in range(bin_size):
-            bin_mask = bin_indices == bin_idx
-            freq_true_rank_in_bin = (
-                (mask & bin_mask).sum().float() / (bin_mask.sum().float() + 1e-6)
-            ).item()
-            mean_prob_in_bin = (
-                torch.mean(y_pred_rank_probs[bin_mask]).item()
-                if torch.sum(bin_mask) > 0
-                else 0.0
-            )
-            count_in_bin = torch.sum(bin_mask).item()
-            ECE_ranking += (count_in_bin / n_instances_total) * abs(
-                freq_true_rank_in_bin - mean_prob_in_bin
-            )
-            # print("Ranking:", ranking, " Bin:", bin_idx, " Count in bin:", count_in_bin, " Freq true rank in bin:", freq_true_rank_in_bin, " Mean prob in bin:", mean_prob_in_bin)
-        # print("Ranking:", ranking, " ECE:", ECE_ranking)
-        ECE_rankwise += ECE_ranking / len(possible_rankings)
-    return ECE_rankwise
 
 
 ###################################
@@ -444,11 +280,12 @@ def calculate_binary_ece(y_true, y_prob, equal_frequency_bins=False, n_bins=10):
         mean_prob_in_bin = (
             torch.mean(y_prob[bin_mask]).item() if torch.sum(bin_mask) > 0 else 0.0
         )
-        # print("Bin:", bin_idx, " Count in bin:", torch.sum(bin_mask).item(), " Freq true in bin:", freq_true_in_bin, " Mean prob in bin:", mean_prob_in_bin)
+        #print("Bin:", bin_idx, " Count in bin:", torch.sum(bin_mask).item(), " Freq true in bin:", freq_true_in_bin, " Mean prob in bin:", mean_prob_in_bin)
         count_in_bin = torch.sum(bin_mask).item()
         ECE += (count_in_bin / n_instances_total) * abs(
             freq_true_in_bin - mean_prob_in_bin
         )
+
     return ECE
 
 
@@ -721,10 +558,10 @@ def construct_sub_k_full_rank_tensors(
                 y_true_sub[i] = ranking_to_idx[tuple(sub_k_ranking)]
 
         # Aggregate the predicted probabilities for this instance
-        for ranking, prob in y_pred_proba[i].items():
+        for ranking, prob in y_pred_proba.items():
             for sub_k_ranking in possible_sub_k_rankings:
                 if check_sub_k_in_ranking(sub_k_ranking, list(ranking)):
-                    y_prob_sub[i, ranking_to_idx[sub_k_ranking]] += prob
+                    y_prob_sub[i, ranking_to_idx[sub_k_ranking]] += prob[i]
     return torch.tensor(y_true_sub, dtype=torch.long), torch.tensor(
         y_prob_sub, dtype=torch.float32
     )
@@ -812,10 +649,10 @@ def construct_top_k_full_rank_tensors(
                 y_true_top_k[i] = ranking_to_idx[tuple(top_k_ranking)]
 
         # Aggregate the predicted probabilities for this instance
-        for ranking, prob in y_pred_proba[i].items():
+        for ranking, prob in y_pred_proba.items():
             for top_k_ranking in possible_top_k_rankings:
                 if check_top_k_in_ranking(top_k_ranking, list(ranking)):
-                    y_prob_top_k[i, ranking_to_idx[top_k_ranking]] += prob
+                    y_prob_top_k[i, ranking_to_idx[top_k_ranking]] += prob[i]
     return torch.tensor(y_true_top_k, dtype=torch.long), torch.tensor(
         y_prob_top_k, dtype=torch.float32
     )
@@ -909,9 +746,9 @@ def construct_sub_k_tensors(
             y_true_sub[i] = 1.0
 
         # Aggregate the predicted probabilities for this instance
-        for ranking, prob in y_pred_proba[i].items():
+        for ranking, prob in y_pred_proba.items():
             if check_sub_k_in_ranking(sub_k_ranking, list(ranking)):
-                y_prob_sub[i] += prob
+                y_prob_sub[i] += prob[i]
     return torch.tensor(y_true_sub), torch.tensor(y_prob_sub, dtype=torch.float32)
 
 
@@ -940,6 +777,7 @@ def calculate_sub_k_calibration(
         )
         # Calculate the ECE for this sub-ranking
         ece_sub_ranking = calculate_binary_ece(y_true_sub, y_prob_sub)
+        # print("Finished sub-ranking:", sub_ranking, " ECE:", ece_sub_ranking)
         if "sub_rankings_ece" not in locals():
             sub_rankings_ece = [{"sub_ranking": sub_ranking, "ece": ece_sub_ranking}]
         else:
@@ -995,9 +833,9 @@ def construct_top_k_tensors(
             y_true_top_k[i] = 1.0
 
         # Aggregate the predicted probabilities for this instance
-        for ranking, prob in y_pred_proba[i].items():
+        for ranking, prob in y_pred_proba.items():
             if check_top_k_in_ranking(top_k_ranking, list(ranking)):
-                y_prob_top_k[i] += prob
+                y_prob_top_k[i] += prob[i]
     return torch.tensor(y_true_top_k), torch.tensor(y_prob_top_k, dtype=torch.float32)
 
 

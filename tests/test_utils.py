@@ -52,10 +52,8 @@ def test_sub_k_in_full_ranking():
 def test_construct_sub_k_tensors():
 
     rankings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
-    ranking_to_probs = [
-        {(3, 1, 4, 2, 5): 0.6, (2, 1, 3, 4, 5): 0.4},
-        {(2, 1, 3, 4, 5): 0.7, (3, 1, 4, 2, 5): 0.3},
-    ]
+    ranking_to_probs = {(3, 1, 4, 2, 5): [0.6, 0.3], (2, 1, 3, 4, 5): [0.4, 0.7]}
+
     sub_k_ranking = [1, 2, 5]
 
     sub_k_tensors, sub_k_probs = construct_sub_k_tensors(
@@ -68,10 +66,8 @@ def test_construct_sub_k_tensors():
     assert torch.allclose(sub_k_probs, expected_probs)
 
     rankings = torch.tensor([[3, 1, 4, 2, 5], [1, 2, 3, 4, 5]], dtype=torch.long)
-    ranking_to_probs = [
-        {(3, 1, 4, 2, 5): 0.6, (1, 2, 3, 4, 5): 0.4},
-        {(1, 2, 3, 4, 5): 0.7, (3, 1, 4, 2, 5): 0.3},
-    ]
+    ranking_to_probs = {(3, 1, 4, 2, 5): [0.6, 0.3], (1, 2, 3, 4, 5): [0.4, 0.7]}
+
     sub_k_ranking = [1, 2, 5]
 
     sub_k_tensors, sub_k_probs = construct_sub_k_tensors(
@@ -90,20 +86,17 @@ def test_sub_k_calibration():
         dtype=torch.long,
     )
     ranking_to_prob = {
-        (1, 2, 3): 2 / 6,
-        (1, 3, 2): 1 / 12,
-        (2, 1, 3): 1 / 12,
-        (2, 3, 1): 1 / 12,
-        (3, 1, 2): 1 / 12,
-        (3, 2, 1): 2 / 6,
+        (1, 2, 3): [2 / 6] * len(rankings),
+        (1, 3, 2): [1 / 12] * len(rankings),
+        (2, 1, 3): [1 / 12] * len(rankings),
+        (2, 3, 1): [1 / 12] * len(rankings),
+        (3, 1, 2): [1 / 12] * len(rankings),
+        (3, 2, 1): [2 / 6] * len(rankings),
     }
-    assert sum(ranking_to_prob.values()) == 1.0
-    ranking_to_probs = [ranking_to_prob for _ in range(len(rankings))]
-
     results = calculate_sub_k_calibration(
         items=[1, 2, 3],
         y_true=rankings,
-        y_pred_proba=ranking_to_probs,
+        y_pred_proba=ranking_to_prob,
         k=2,
     )
     total_ece = results["total_ece"]
@@ -115,20 +108,18 @@ def test_sub_k_calibration():
         dtype=torch.long,
     )
     ranking_to_prob = {
-        (1, 2, 3): 1 / 3,
-        (1, 3, 2): 0,
-        (2, 1, 3): 0,
-        (2, 3, 1): 0,
-        (3, 1, 2): 0,
-        (3, 2, 1): 2 / 3,
+        (1, 2, 3): [1 / 3] * len(rankings),
+        (1, 3, 2): [0] * len(rankings),
+        (2, 1, 3): [0] * len(rankings),
+        (2, 3, 1): [0] * len(rankings),
+        (3, 1, 2): [0] * len(rankings),
+        (3, 2, 1): [2 / 3] * len(rankings),
     }
-    assert sum(ranking_to_prob.values()) == 1.0
-    ranking_to_probs = [ranking_to_prob for _ in range(len(rankings))]
 
     results = calculate_sub_k_calibration(
         items=[1, 2, 3],
         y_true=rankings,
-        y_pred_proba=ranking_to_probs,
+        y_pred_proba=ranking_to_prob,
         k=2,
     )
     total_ece = results["total_ece"]
@@ -155,10 +146,8 @@ def test_top_k_in_full_ranking():
 def test_construct_top_k_tensors():
 
     rankings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
-    ranking_to_probs = [
-        {(3, 1, 4, 2, 5): 0.6, (2, 1, 3, 4, 5): 0.4},
-        {(2, 1, 3, 4, 5): 0.7, (3, 1, 4, 2, 5): 0.3},
-    ]
+    ranking_to_probs = {(3, 1, 4, 2, 5): [0.6, 0.3], (2, 1, 3, 4, 5): [0.4, 0.7]}
+    
     top_k_ranking = [3, 1, 4]
 
     top_k_tensors, top_k_probs = construct_top_k_tensors(
@@ -171,10 +160,7 @@ def test_construct_top_k_tensors():
     assert torch.allclose(top_k_probs, expected_probs)
 
     rankings = torch.tensor([[3, 1, 4, 2, 5], [1, 2, 3, 4, 5]], dtype=torch.long)
-    ranking_to_probs = [
-        {(3, 1, 4, 2, 5): 0.6, (3, 1, 4, 4, 5): 0.4},
-        {(1, 2, 3, 4, 5): 0.7, (3, 1, 4, 2, 5): 0.3},
-    ]
+    ranking_to_probs = {(3, 1, 4, 2, 5): [0.6,0.3], (3, 1, 4, 4, 5): [0.4,0], (1, 2, 3, 4, 5): [0,0.7]}
     top_k_ranking = [3, 1, 4]
 
     top_k_tensors, top_k_probs = construct_top_k_tensors(
@@ -193,20 +179,18 @@ def test_top_k_calibration():
         dtype=torch.long,
     )
     ranking_to_prob = {
-        (1, 2, 3): 1 / 3,
-        (1, 3, 2): 0,
-        (2, 1, 3): 0,
-        (2, 3, 1): 1 / 3,
-        (3, 1, 2): 0,
-        (3, 2, 1): 1 / 3,
+        (1, 2, 3): [1 / 3] * len(rankings),
+        (1, 3, 2): [0   ] * len(rankings),
+        (2, 1, 3): [0   ] * len(rankings),
+        (2, 3, 1): [    1 / 3] * len(rankings),
+        (3, 1, 2): [0] * len(rankings),
+        (3, 2, 1): [1 / 3] * len(rankings),
     }
-    assert sum(ranking_to_prob.values()) == 1.0
-    ranking_to_probs = [ranking_to_prob for _ in range(len(rankings))]
 
     results = calculate_top_k_calibration(
         items=[1, 2, 3],
         y_true=rankings,
-        y_pred_proba=ranking_to_probs,
+        y_pred_proba=ranking_to_prob,
         k=1,
     )
     total_ece = results["total_ece"]
@@ -223,20 +207,18 @@ def test_rankwise_calibration():
         dtype=torch.long,
     )
     ranking_to_prob = {
-        (1, 2, 3): 1 / 3,
-        (1, 3, 2): 0,
-        (2, 1, 3): 0,
-        (2, 3, 1): 1 / 3,
-        (3, 1, 2): 0,
-        (3, 2, 1): 1 / 3,
+        (1, 2, 3): [1 / 3] * len(rankings),
+        (1, 3, 2): [0] * len(rankings),
+        (2, 1, 3): [0] * len(rankings),
+        (2, 3, 1): [1 / 3] * len(rankings),
+        (3, 1, 2): [0] * len(rankings),
+        (3, 2, 1): [1 / 3] * len(rankings),
     }
-    assert sum(ranking_to_prob.values()) == 1.0
-    ranking_to_probs = [ranking_to_prob for _ in range(len(rankings))]
 
     results = calculate_top_k_calibration(
         items=[1, 2, 3],
         y_true=rankings,
-        y_pred_proba=ranking_to_probs,
+        y_pred_proba=ranking_to_prob,
         k=3,
     )
     total_ece_1 = results["total_ece"]
@@ -246,7 +228,7 @@ def test_rankwise_calibration():
     results = calculate_top_k_calibration(
         items=[1, 2, 3],
         y_true=rankings,
-        y_pred_proba=ranking_to_probs,
+        y_pred_proba=ranking_to_prob,
         k=2,
     )
     total_ece_2 = results["total_ece"]
@@ -256,7 +238,7 @@ def test_rankwise_calibration():
     results = calculate_sub_k_calibration(
         items=[1, 2, 3],
         y_true=rankings,
-        y_pred_proba=ranking_to_probs,
+        y_pred_proba=ranking_to_prob,
         k=3,
     )
     total_ece_3 = results["total_ece"]
