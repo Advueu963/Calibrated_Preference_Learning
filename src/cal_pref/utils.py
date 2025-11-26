@@ -35,8 +35,7 @@ def synthetic_data(rng, name, num_samples=1000, num_features=5, num_items=3):
             ]
         )
         rank_to_prob = {
-            ranking: prob
-            for ranking, prob in zip(possible_rankings, probs_of_rankings)
+            ranking: prob for ranking, prob in zip(possible_rankings, probs_of_rankings)
         }
         # print("Ranking to Probability Mapping: ", rank_to_prob)
         # normalize numerical issues
@@ -67,7 +66,7 @@ def synthetic_data(rng, name, num_samples=1000, num_features=5, num_items=3):
     }
     # print("Probability Distribution: ", relation_probs_ranks)
     # print("True probabilities of rankings: ", probs_of_rankings)
-    
+
     # print("Sum of true probabilities of rankings: ", np.sum(probs_of_rankings))
     X = np.ones((num_samples, num_features))
     y = rng.choice(len(possible_rankings), size=num_samples, p=probs_of_rankings)
@@ -173,7 +172,7 @@ def load_lr_data(dataset_name):
         )
 
     if dataset_name == "political":
-        dataFrame = pd.read_csv(f"lr_plr_data/LR_DATA/political.csv")
+        dataFrame = pd.read_csv(f"src/cal_pref/data/political.csv")
 
         # Split in Features and Targets
         X, Y = dataFrame.iloc[:, :-6], dataFrame.iloc[:, -6:]
@@ -216,7 +215,7 @@ def load_lr_data(dataset_name):
         y = Y_data
 
     else:
-        data = pd.read_csv(f"lr_plr_data/LR_DATA/{dataset_name}.csv")
+        data = pd.read_csv(f"src/cal_pref/data/{dataset_name}.csv")
         target_columns = [col for col in data.columns if col.startswith("L")]
         X = data.drop(columns=target_columns).values
         y = data[target_columns].values
@@ -280,7 +279,7 @@ def calculate_binary_ece(y_true, y_prob, equal_frequency_bins=False, n_bins=10):
         mean_prob_in_bin = (
             torch.mean(y_prob[bin_mask]).item() if torch.sum(bin_mask) > 0 else 0.0
         )
-        #print("Bin:", bin_idx, " Count in bin:", torch.sum(bin_mask).item(), " Freq true in bin:", freq_true_in_bin, " Mean prob in bin:", mean_prob_in_bin)
+        # print("Bin:", bin_idx, " Count in bin:", torch.sum(bin_mask).item(), " Freq true in bin:", freq_true_in_bin, " Mean prob in bin:", mean_prob_in_bin)
         count_in_bin = torch.sum(bin_mask).item()
         ECE += (count_in_bin / n_instances_total) * abs(
             freq_true_in_bin - mean_prob_in_bin
