@@ -80,8 +80,8 @@ def get_preference_models(input_dim, n_items, hidden_dims, output_dim, y):
         np.argmax([np.sum((y == ranking).all(axis=1)) for ranking in unique_rankings])
     ]
     print("Most occurrent ranking in training set: ", most_occurrent_ranking)
-    mallows_model = MallowsModel(
-        reference_ranking=torch.tensor(most_occurrent_ranking), dispersion=0.5
+    mallows_model = MallowsModel.fit_from_data(
+        torch.tensor(y, dtype=torch.long), distance_metric="kendall"
     )
 
     # RPC Baseline with Logistic Regression
@@ -643,7 +643,7 @@ if __name__ == "__main__":
     placket_luce_model_brier, placket_brier_criterion, placket_brier_optimizer = (
         models_optimizer_criterion["PlackettLuceModelBrier"]
     )
-    mallows_model, _, _ = models_optimizer_criterion["MallowsModel"]
+    _mallows_model_entry, _, _ = models_optimizer_criterion["MallowsModel"]
     baseline_estimator, _, _ = models_optimizer_criterion["RPC_PL"]
 
     n_folds = 5
@@ -699,11 +699,15 @@ if __name__ == "__main__":
             X_train, y_train, X_test, n_items, method_rpc_pl="map"
         )
 
+        mallows_model_fold = MallowsModel.fit_from_data(
+            y_train_tensor, distance_metric="kendall"
+        )
+
         #### Evaluate Models ####
         results = evaluate_kendal_models(
             models=[
                 placket_luce_model,
-                mallows_model,
+                mallows_model_fold,
                 preference_model,
                 placket_luce_model_baseline,
             ],
@@ -744,7 +748,9 @@ if __name__ == "__main__":
         ####### Class-wise ECE Calibration #######
         print("Calculating Class-wise ECE...")
         distribution_pl = placket_luce_model.predict_ranking_distribution(X_test_tensor)
-        distribution_mallows = mallows_model.predict_ranking_distribution(X_test_tensor)
+        distribution_mallows = mallows_model_fold.predict_ranking_distribution(
+            X_test_tensor
+        )
         distribution_pref = preference_model.predict_ranking_distribution(X_test_tensor)
         distribution_rpc_pl = placket_luce_model_baseline.predict_ranking_distribution(
             X_test_tensor
@@ -1135,6 +1141,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[0, 0],
     )
     axes[0, 0].set_title("Sub-k ECE vs k")
@@ -1152,6 +1159,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[0, 1],
     )
     axes[0, 1].set_title("Top-k ECE vs k")
@@ -1168,6 +1176,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[1, 0],
     )
     axes[1, 0].set_title("Sub-k ECE vs k (Full Rank)")
@@ -1184,6 +1193,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[1, 1],
     )
     axes[1, 1].set_title("Top-k ECE vs k (Full Rank)")

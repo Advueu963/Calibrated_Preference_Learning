@@ -12,9 +12,9 @@ def build_preference_mlp(input_dim: int, hidden_dims: list[int], output_dim: int
         layers.append(nn.Linear(in_dim, h_dim))
         layers.append(nn.ReLU())
         in_dim = h_dim
-    head = nn.Linear(in_dim, output_dim)
+    layers.append(nn.Linear(in_dim, output_dim))
 
-    return nn.Sequential(*layers), head
+    return nn.Sequential(*layers)
 
 
 def build_plackett_luce_mlp(input_dim: int, hidden_dims: list[int], n_items: int):
@@ -29,10 +29,12 @@ def build_plackett_luce_mlp(input_dim: int, hidden_dims: list[int], n_items: int
 
 
 class PreferenceModel(nn.Module):
-    """Probabilistic Preference Model using a multi-head MLP architecture.
-    Each head corresponds to an item and outputs logits for that item being ranked at each position.
-    The final output is a combination of all heads, representing the joint distribution over rankings.
-
+    """Probabilistic Preference Model using training each possible ranking as a class.
+    This model uses a multi-layer perceptron (MLP) to predict the logits for each
+    possible ranking of items. Each unique ranking is treated as a separate class.
+    The model can handle unseen rankings by assigning them a uniform low probability.
+    During inference, the model outputs the probabilities for each ranking using
+    the softmax function.
     """
 
     def __init__(
@@ -44,7 +46,7 @@ class PreferenceModel(nn.Module):
         unique_rankings: torch.Tensor,
     ):
         super(PreferenceModel, self).__init__()
-        self.mlp, self.head = build_preference_mlp(input_dim, hidden_dims, output_dim)
+        self.mlp = build_preference_mlp(input_dim, hidden_dims, output_dim)
         if math.factorial(n_items) != output_dim:
             self.unseen_weights = nn.Parameter(torch.zeros(1)).float()
         else:
@@ -59,9 +61,8 @@ class PreferenceModel(nn.Module):
 
     def forward(self, x):
         x = self.mlp(x)
-        x = self.head(x)
         if self.unseen_weights is not None:
-            #print("UNSEEN WEIGHTS: ", self.unseen_weights)
+            # print("UNSEEN WEIGHTS: ", self.unseen_weights)
             x = torch.hstack(
                 (
                     x,
@@ -97,7 +98,7 @@ class PreferenceModel(nn.Module):
         return rank_probs
 
     def predict_ranking_distribution(self, x):
-        logits = self.forward(x).clamp(min=1e-6)
+        logits = self.forward(x)
         rankings = permutations(range(1, self.n_items + 1))
         distribution = {}
         for rank in rankings:
@@ -260,6 +261,7 @@ class MallowsModel(nn.Module):
     ):
         self.reference_ranking = reference_ranking
         self.n_items = reference_ranking.shape[0]
+        self.theta = dispersion
         self.dispersion = np.exp(-dispersion)
         self.distance_metric = distance_metric
         self.normalization_constant = self.compute_normalization_constant()
@@ -311,3 +313,190 @@ class MallowsModel(nn.Module):
             probs = self.predict_proba_ranking(x, rank_tensor)
             distribution[rank] = probs.detach()
         return distribution
+
+    @classmethod
+    def fit_from_data(
+        cls,
+        rankings: torch.Tensor,
+        distance_metric: str = "kendall",
+        max_iters: int = 50,
+        tol: float = 1e-4,
+    ):
+        if distance_metric not in {"kendall", "cayley"}:
+            raise ValueError(
+                f"Unsupported distance metric '{distance_metric}'. Choose 'kendall' or 'cayley'."
+            )
+
+        rankings_np = rankings.detach().cpu().numpy()
+        modal_ranking = _mean_rank_initialization(rankings_np)
+        theta = 1.0
+        prev_log_likelihood = None
+
+        for _ in range(max_iters):
+            distances = _distances_to_modal(modal_ranking, rankings_np, distance_metric)
+            sum_distances = distances.sum()
+            theta = _estimate_theta(
+                sum_distances, rankings_np.shape[0], modal_ranking.size, tol
+            )
+            log_likelihood = _log_likelihood(
+                theta, sum_distances, rankings_np.shape[0], modal_ranking.size
+            )
+
+            improved = False
+            current_sum = sum_distances
+            best_ranking = modal_ranking
+            for neighbor in _cayley_neighbors(modal_ranking):
+                neighbor_sum = _total_distance(neighbor, rankings_np, distance_metric)
+                if neighbor_sum + 1e-9 < current_sum:
+                    current_sum = neighbor_sum
+                    best_ranking = neighbor
+                    improved = True
+
+            modal_ranking = best_ranking
+
+            if (
+                prev_log_likelihood is not None
+                and abs(log_likelihood - prev_log_likelihood) < tol
+                and not improved
+            ):
+                break
+            prev_log_likelihood = log_likelihood
+
+        reference = torch.tensor(modal_ranking, dtype=torch.long)
+        model = cls(
+            reference_ranking=reference,
+            dispersion=theta,
+            distance_metric=distance_metric,
+        )
+        return model
+
+
+def _mean_rank_initialization(rankings: np.ndarray) -> np.ndarray:
+    n_items = rankings.shape[1]
+    mean_positions = np.zeros(n_items, dtype=np.float64)
+    for ranking in rankings:
+        for position, item in enumerate(ranking):
+            mean_positions[int(item) - 1] += position
+    mean_positions /= rankings.shape[0]
+    ordering = np.argsort(mean_positions)
+    return (ordering + 1).astype(np.int64)
+
+
+def _distance_fn(distance_metric: str):
+    if distance_metric == "kendall":
+        return _kendall_distance
+    return _cayley_distance
+
+
+def _distances_to_modal(
+    modal_ranking: np.ndarray, rankings: np.ndarray, distance_metric: str
+) -> np.ndarray:
+    distance = _distance_fn(distance_metric)
+    return np.array(
+        [distance(modal_ranking, ranking) for ranking in rankings], dtype=np.float64
+    )
+
+
+def _total_distance(
+    modal_ranking: np.ndarray, rankings: np.ndarray, distance_metric: str
+) -> float:
+    return _distances_to_modal(modal_ranking, rankings, distance_metric).sum()
+
+
+def _cayley_neighbors(ranking: np.ndarray):
+    n_items = ranking.size
+    neighbors = [ranking.copy()]
+    for i in range(n_items):
+        for j in range(i + 1, n_items):
+            neighbor = ranking.copy()
+            neighbor[i], neighbor[j] = neighbor[j], neighbor[i]
+            neighbors.append(neighbor)
+    return neighbors
+
+
+def _estimate_theta(
+    sum_distances: float, n_samples: int, n_items: int, tol: float
+) -> float:
+    if sum_distances <= 1e-12:
+        return 20.0
+
+    lower, upper = 1e-6, 1.0
+    while (
+        _theta_derivative(upper, sum_distances, n_samples, n_items) > 0 and upper < 100
+    ):
+        upper *= 2.0
+
+    for _ in range(100):
+        mid = 0.5 * (lower + upper)
+        derivative = _theta_derivative(mid, sum_distances, n_samples, n_items)
+        if abs(derivative) < tol:
+            return mid
+        if derivative > 0:
+            lower = mid
+        else:
+            upper = mid
+    return mid
+
+
+def _theta_derivative(
+    theta: float, sum_distances: float, n_samples: int, n_items: int
+) -> float:
+    exp_neg_theta = math.exp(-theta)
+    exp_neg_theta = min(exp_neg_theta, 1 - 1e-12)
+    base_denominator = 1 - exp_neg_theta
+    base_term = exp_neg_theta / max(base_denominator, 1e-12)
+
+    derivative_log_z = 0.0
+    for j in range(1, n_items):
+        multiplier = j + 1
+        exp_component = math.exp(-multiplier * theta)
+        exp_component = min(exp_component, 1 - 1e-12)
+        denominator = max(1 - exp_component, 1e-12)
+        derivative_log_z += (multiplier * exp_component / denominator) - base_term
+
+    return -n_samples * derivative_log_z - sum_distances
+
+
+def _log_likelihood(
+    theta: float, sum_distances: float, n_samples: int, n_items: int
+) -> float:
+    return -n_samples * _log_partition(theta, n_items) - theta * sum_distances
+
+
+def _log_partition(theta: float, n_items: int) -> float:
+    if theta < 1e-8:
+        return math.log(math.factorial(n_items))
+
+    log_z = 0.0
+    exp_neg_theta = math.exp(-theta)
+    log_one_minus_exp = math.log1p(-exp_neg_theta)
+    for j in range(1, n_items):
+        log_z += math.log1p(-math.exp(-(j + 1) * theta)) - log_one_minus_exp
+    return log_z
+
+
+def _kendall_distance(p: np.ndarray, q: np.ndarray) -> int:
+    positions = {int(item): idx for idx, item in enumerate(q)}
+    distance = 0
+    n_items = len(p)
+    for i in range(n_items):
+        for j in range(i + 1, n_items):
+            if positions[int(p[i])] > positions[int(p[j])]:
+                distance += 1
+    return distance
+
+
+def _cayley_distance(p: np.ndarray, q: np.ndarray) -> int:
+    source = list(map(int, p))
+    target = list(map(int, q))
+    position = {value: idx for idx, value in enumerate(source)}
+    swaps = 0
+    for idx, correct_value in enumerate(target):
+        current_value = source[idx]
+        if current_value != correct_value:
+            swaps += 1
+            swap_idx = position[correct_value]
+            position[current_value] = swap_idx
+            source[idx], source[swap_idx] = source[swap_idx], source[idx]
+            position[correct_value] = idx
+    return swaps

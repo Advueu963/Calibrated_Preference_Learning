@@ -3,6 +3,18 @@ import torch.nn as nn
 from math import factorial
 
 
+class BrierLoss(nn.Module):
+    def __init__(self):
+        super(BrierLoss, self).__init__()
+
+    def forward(self, y_pred, y_true):
+        y_true_one_hot = torch.nn.functional.one_hot(
+            y_true, num_classes=y_pred.size(1)
+        ).float()
+        loss = torch.mean(torch.sum((y_pred - y_true_one_hot) ** 2, dim=1))
+        return loss
+
+
 class PlackettLuceLoss(nn.Module):
     """Negative log-likelihood loss for the Plackett-Luce model"""
 
@@ -46,12 +58,12 @@ class PlackettLuceBrierPreferenceLoss(nn.Module):
         loss = torch.where(
             valid_predictions,
             loss,
-            (1 - 1 / (factorial(y_true.shape[1]) - 1)) + loss,  # Penalize invalid predictions
+            (1 - 1 / (factorial(y_true.shape[1]) - 1))
+            + loss,  # Penalize invalid predictions
         )
 
         # print("LOSS: ", loss.shape)
         return torch.mean(loss)
-
 
 
 class BrierPreferenceLoss(nn.Module):
@@ -95,11 +107,13 @@ class BrierPreferenceLoss(nn.Module):
         loss = torch.where(
             valid_predictions,
             loss,
-            (1 - 1 / (self.maximal_t_list_size - 1)) + loss,  # Penalize invalid predictions
+            (1 - 1 / (self.maximal_t_list_size - 1))
+            + loss,  # Penalize invalid predictions
         )
 
         # print("LOSS: ", loss.shape)
         return torch.mean(loss)
+
 
 class LogLossPreferenceLoss(nn.Module):
     """Log Loss for preference learning"""
@@ -107,6 +121,7 @@ class LogLossPreferenceLoss(nn.Module):
     def __init__(self, maximal_t_list_size: int) -> None:
         super(LogLossPreferenceLoss, self).__init__()
         self.maximal_t_list_size = maximal_t_list_size
+
     def forward(self, y_true, y_pred, y_pred_probs, probs_of_ranks):
         mask = (y_true == y_pred).all(dim=-1)
 
@@ -116,7 +131,8 @@ class LogLossPreferenceLoss(nn.Module):
             torch.where(
                 mask,
                 -torch.log(rank_probs + 1e-10),
-                torch.log(torch.tensor(self.maximal_t_list_size - 1)) - torch.log(1- rank_probs + 1e-10),
+                torch.log(torch.tensor(self.maximal_t_list_size - 1))
+                - torch.log(1 - rank_probs + 1e-10),
             )
         )  # Add a small constant to avoid log(0)
 

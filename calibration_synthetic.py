@@ -23,6 +23,7 @@ from cal_pref.preference_models import (
     PlackettLuceModelWeights,
 )
 from cal_pref.preference_losses import (
+    BrierLoss,
     BrierPreferenceLoss,
     LogLossPreferenceLoss,
     PlackettLuceLoss,
@@ -59,7 +60,7 @@ def get_preference_models(input_dim, n_items, hidden_dims, output_dim, y):
     )
     # criterion = BrierPreferenceLoss(maximal_t_list_size=n_items**n_items)
     # criterion = LogLossPreferenceLoss(maximal_t_list_size=factorial(n_items))
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = BrierLoss()
     optimizer = torch.optim.Adam(preference_model.parameters(), lr=0.001)
 
     # Plackett-Luce Model with standard PL Loss
@@ -80,8 +81,8 @@ def get_preference_models(input_dim, n_items, hidden_dims, output_dim, y):
         np.argmax([np.sum((y == ranking).all(axis=1)) for ranking in unique_rankings])
     ]
     print("Most occurrent ranking in training set: ", most_occurrent_ranking)
-    mallows_model = MallowsModel(
-        reference_ranking=torch.tensor(most_occurrent_ranking), dispersion=0.5
+    mallows_model = MallowsModel.fit_from_data(
+        torch.tensor(y, dtype=torch.long), distance_metric="kendall"
     )
 
     # RPC Baseline with Logistic Regression
@@ -173,11 +174,14 @@ def train_preference_model(
             preference_model.train()
             optimizer.zero_grad()
             logits = preference_model(X_batch).float()
+            probs = torch.softmax(logits, dim=1)
             y_batch_idx = torch.tensor(
                 [preference_model.idx_rankings[tuple(r.tolist())] for r in y_batch],
                 device=logits.device,
             ).long()
-            loss_pref = criterion(logits, y_batch_idx)
+
+            # loss_pref = criterion(logits, y_batch_idx)
+            loss_pref = criterion(probs, y_batch_idx)
             loss_pref.backward()
             optimizer.step()
 
@@ -318,11 +322,15 @@ def evaluate_preference_model(
             device=logits.device,
         ).long()
         y_test_pred = preference_model.predict(X_test_tensor)
+        # test_loss = preference_criterion(
+        #     logits,
+        #     y_test_idx,
+        # )
         test_loss = preference_criterion(
-            logits,
+            torch.softmax(logits, dim=1),
             y_test_idx,
         )
-        print(f"Test Preference Model Loss: {test_loss.item()}")
+        # print(f"Test Preference Model Loss: {test_loss.item()}")
 
         kendal_dist = tau_score(y_test_tensor, y_test_pred)
 
@@ -377,7 +385,7 @@ def evaluate_mallows_model(
     with torch.no_grad():
         y_test_pred = mallows_model.predict(X_test_tensor)
         kendal_dist = tau_score(y_test_tensor, y_test_pred)
-        print(f"Kendal Distance on Test Set (Mallows): {kendal_dist}")
+        # print(f"Kendal Distance on Test Set (Mallows): {kendal_dist}")
 
     return kendal_dist, None
 
@@ -402,7 +410,7 @@ def evaluate_placket_luce_rpc_model(
         y_baseline_pred = placket_luce_model_baseline.predict(X_test_tensor)
 
         kendal_dist = tau_score(y_test_tensor, y_baseline_pred)
-        print(f"Kendal Distance on Test Set (PL RPC): {kendal_dist}")
+        # print(f"Kendal Distance on Test Set (PL RPC): {kendal_dist}")
 
     return kendal_dist, None
 
@@ -666,8 +674,8 @@ if __name__ == "__main__":
     np.random.seed(42)
     rng = np.random.default_rng(42)
     num_epochs = 50
-    batch_size = 128
-    dataset_name = "synthetic_pl_probs"
+    batch_size = 64
+    dataset_name = "synthetic_mallows_probs"
 
     if dataset_name.startswith("synthetic"):
         X, y, y_true_probs = synthetic_data(
@@ -698,7 +706,7 @@ if __name__ == "__main__":
     placket_luce_model_brier, placket_brier_criterion, placket_brier_optimizer = (
         models_optimizer_criterion["PlackettLuceModelBrier"]
     )
-    mallows_model, _, _ = models_optimizer_criterion["MallowsModel"]
+    _mallows_model_entry, _, _ = models_optimizer_criterion["MallowsModel"]
     baseline_estimator, _, _ = models_optimizer_criterion["RPC_PL"]
 
     n_folds = 5
@@ -754,11 +762,15 @@ if __name__ == "__main__":
             X_train, y_train, X_test, n_items, method_rpc_pl="map"
         )
 
+        mallows_model_fold = MallowsModel.fit_from_data(
+            y_train_tensor, distance_metric="kendall"
+        )
+
         #### Evaluate Models ####
         results = evaluate_kendal_models(
             models=[
                 placket_luce_model,
-                mallows_model,
+                mallows_model_fold,
                 preference_model,
                 placket_luce_model_baseline,
             ],
@@ -783,6 +795,13 @@ if __name__ == "__main__":
             X_test_tensor=X_test_tensor,
             y_test_tensor=y_test_tensor,
         )
+        ##### Print Kendall's Tau Results #####
+        print("> Kendall's Tau Results:")
+        for model_name in results.keys():
+            print(
+                f"{model_name}: Kendall's Tau = {results[model_name][0]}, Test Loss = {results[model_name][1]}"
+            )
+        print("\n")
         res_tau_dist.append(
             (
                 results["PlackettLuce"][0],
@@ -827,7 +846,9 @@ if __name__ == "__main__":
         ####### Class-wise ECE Calibration #######
         print("Calculating Class-wise ECE...")
         distribution_pl = placket_luce_model.predict_ranking_distribution(X_test_tensor)
-        distribution_mallows = mallows_model.predict_ranking_distribution(X_test_tensor)
+        distribution_mallows = mallows_model_fold.predict_ranking_distribution(
+            X_test_tensor
+        )
         distribution_pref = preference_model.predict_ranking_distribution(X_test_tensor)
         distribution_rpc_pl = placket_luce_model_baseline.predict_ranking_distribution(
             X_test_tensor
@@ -1219,6 +1240,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[0, 0],
     )
     axes[0, 0].set_title("Sub-k ECE vs k")
@@ -1236,6 +1258,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[0, 1],
     )
     axes[0, 1].set_title("Top-k ECE vs k")
@@ -1252,6 +1275,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[1, 0],
     )
     axes[1, 0].set_title("Sub-k ECE vs k (Full Rank)")
@@ -1268,6 +1292,7 @@ if __name__ == "__main__":
         marker="o",
         errorbar=("sd"),
         palette="Dark2",
+        linestyle="--",
         ax=axes[1, 1],
     )
     axes[1, 1].set_title("Top-k ECE vs k (Full Rank)")
