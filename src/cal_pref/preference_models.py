@@ -44,11 +44,12 @@ class PreferenceModel(nn.Module):
         hidden_dims: list[int],
         output_dim: int,
         unique_rankings: torch.Tensor,
+        constant_value: float = 0.0,
     ):
         super(PreferenceModel, self).__init__()
         self.mlp = build_preference_mlp(input_dim, hidden_dims, output_dim)
         if math.factorial(n_items) != output_dim:
-            self.unseen_weights = nn.Parameter(torch.zeros(1)).float()
+            self.unseen_weights = (constant_value * torch.ones(math.factorial(n_items) - output_dim)).float()
         else:
             self.unseen_weights = None
         self.n_items = n_items
@@ -56,6 +57,7 @@ class PreferenceModel(nn.Module):
         self.idx_rankings = {
             tuple(r.tolist()): i for i, r in enumerate(unique_rankings)
         }
+        self.temperature = 1.0
 
         # print("SELF N ITEMS: ", self.n_items)
 
@@ -72,7 +74,7 @@ class PreferenceModel(nn.Module):
                 )
             )
         # print(x)
-        return x
+        return x / self.temperature
 
     def predict_proba(self, x):
         logits = self.forward(x)
@@ -194,39 +196,36 @@ class PlackettLuceModel(nn.Module):
         return x.clamp_min(1e-9)
 
     def predict(self, x):
-        logits = self.forward(x)
+        weights = self.forward(x)
         # exp_logits = torch.exp(logits)
-        ranking = torch.argsort(logits, dim=-1, descending=True) + 1
+        ranking = torch.argsort(weights, dim=-1, descending=True) + 1
         return ranking
 
     def predict_proba(self, x):
-        logits = self.forward(x)
+        weights = self.forward(x)
         # exp_logits = torch.exp(logits)
         cumulative_sums = torch.cumsum(
-            torch.sort(logits, dim=-1, descending=False), dim=-1
+            torch.sort(weights, dim=-1, descending=False), dim=-1
         )
-        logits, _ = torch.sort(logits, dim=-1, descending=True)
-        logits = logits / cumulative_sums
-        probs = torch.prod(logits, dim=-1, keepdim=True)
+        weights, _ = torch.sort(weights, dim=-1, descending=True)
+        weights = weights / cumulative_sums
+        probs = torch.prod(weights, dim=-1, keepdim=True)
         return probs
 
-    def predict_proba_ranking_logits(self, logits, rank):
-        # Restrict logits to cause no numerical issues
-        # un_exp_logits = torch.exp(logits)  # Use sqrt to reduce range of logits
-        # exp_logits = un_exp_logits
-        # print("EXP LOGITS: ", exp_logits)
+    def predict_proba_ranking_logits(self, weights, rank):
+
         if len(rank.shape) == 1:
-            rank = rank.expand(logits.shape[0], -1)
+            rank = rank.expand(weights.shape[0], -1)
         idx_rank_sort = torch.argsort(rank, dim=-1, descending=True)
-        logits = torch.gather(
-            logits, 1, idx_rank_sort
+        weights = torch.gather(
+            weights, 1, idx_rank_sort
         )  # the exps that the highest rank (1) comes last
-        cum_sums = torch.cumsum(logits, dim=-1)
-        probs = (logits / cum_sums).prod(dim=-1)
+        cum_sums = torch.cumsum(weights, dim=-1)
+        probs = (weights / cum_sums).prod(dim=-1)
 
         # print("PROBS: ", probs)
         if any(probs.isnan()):
-            print("LOGITS: ", logits)
+            print("LOGITS: ", weights)
             print("RANK: ", rank)
             print("CUM SUMS: ", cum_sums)
             print("PROBS: ", probs)
@@ -234,22 +233,22 @@ class PlackettLuceModel(nn.Module):
         return probs
 
     def predict_ranking_distribution(self, x):
-        logits = self.forward(x).clamp(min=1e-6)
+        weights = self.forward(x)
         rankings = permutations(range(1, self.n_items + 1))
         distribution = {}
         for rank in rankings:
             rank_tensor = (
-                torch.tensor(rank, device=logits.device)
+                torch.tensor(rank, device=weights.device)
                 .unsqueeze(0)
                 .expand(x.shape[0], -1)
             )
-            probs = self.predict_proba_ranking_logits(logits, rank_tensor)
+            probs = self.predict_proba_ranking_logits(weights, rank_tensor)
             distribution[rank] = probs.detach()
         return distribution
 
     def predict_proba_ranking(self, x, rank):
-        logits = self.forward(x).clamp(min=1e-6)
-        return self.predict_proba_ranking_logits(logits, rank)
+        weights = self.forward(x)
+        return self.predict_proba_ranking_logits(weights, rank)
 
 
 class MallowsModel(nn.Module):

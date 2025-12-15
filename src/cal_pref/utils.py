@@ -241,9 +241,67 @@ def kendal_distance(y_true, y_pred, normalize=True):
 ###################################
 ## Core ECE Computation Function #
 #################################
+def calculate_binary_ece_general(
+    y_true,
+    y_prob,
+    discrepancy="abs",  # "abs" | "rel_p" | "rel_q" | "log_ratio" | "kl" | "jeff"
+    eps=1e-12,
+    bin_spacing="linear",  # "linear" | "log"
+):
+    n = y_true.shape[0]
+    if bin_spacing == "log":
+        # Log spaced bins
+        bins = torch.logspace(np.log10(eps), 0.0, steps=11)
+        bins[0] = 0.0
+        bins[-1] = 1.0
+    else:
+        # Linear spaced bins
+        bins = torch.linspace(0.0, 1.0, steps=11)
+    idx = torch.bucketize(y_prob, bins, right=True) - 1
+    idx = idx.clamp(0, len(bins) - 2)  # n_bins intervals
+
+    ece = 0.0
+    for b in range(len(bins) - 1):
+        mask = idx == b
+        cnt = mask.sum().item()
+        if cnt == 0:
+            continue
+
+        p_hat = (y_true[mask].float().mean()).item()
+        q_hat = (y_prob[mask].float().mean()).item()
+
+        if discrepancy == "abs":
+            d = abs(p_hat - q_hat)
+        elif discrepancy == "rel_p":
+            d = abs(p_hat - q_hat) / (p_hat + eps)
+        elif discrepancy == "rel_q":
+            d = abs(p_hat - q_hat) / (q_hat + eps)
+        elif discrepancy == "log_ratio":
+            d = abs(np.log((p_hat + eps) / (q_hat + eps)))
+        elif discrepancy == "kl":
+            # Bernoulli KL(p||q)
+            p = min(max(p_hat, eps), 1 - eps)
+            q = min(max(q_hat, eps), 1 - eps)
+            d = p * np.log(p / q) + (1 - p) * np.log((1 - p) / (1 - q))
+        elif discrepancy == "jeff":
+            # Jeffreys divergence
+            p = (y_true[mask].float().sum() + 1 / 2) / (
+                len(y_true[mask]) + 1
+            )  # Jeffrey smoothing for numerical stability
+            q = min(max(q_hat, eps), 1 - eps)
+            kl_pq = p * np.log(p / q) + (1 - p) * np.log((1 - p) / (1 - q))
+            kl_qp = q * np.log(q / p) + (1 - q) * np.log((1 - q) / (1 - p))
+            d = (kl_pq + kl_qp)
+            d = 1 - np.exp(-d) # scale to [0,1], where 1 is maximum divergence and 0 is no divergence
+        else:
+            raise ValueError(discrepancy)
+
+        ece += (cnt / n) * d
+
+    return float(ece)
 
 
-def calculate_binary_ece(y_true, y_prob, equal_frequency_bins=False, n_bins=10):
+def calculate_binary_ece(y_true, y_prob, n_bins=10):
     """Calculates the ECE for binary classification.
 
     Args:
@@ -255,21 +313,19 @@ def calculate_binary_ece(y_true, y_prob, equal_frequency_bins=False, n_bins=10):
         float: The ECE score.
     """
     n_instances_total = y_true.shape[0]
-    probs_range = y_prob.max() - y_prob.min()
-    if equal_frequency_bins and probs_range > 0:
-        sorted_probs, _ = torch.sort(y_prob)
-        bins = [
-            sorted_probs[int(i * n_instances_total / n_bins)].item()
-            for i in range(n_bins - 1)
-        ] + [sorted_probs[-1].item() + 1e-6]
-        bins = torch.tensor(bins)
-    else:
-        bins = torch.linspace(0, 1, n_bins)
-    if len(bins) <= 1:
-        bin_indices = torch.zeros_like(y_prob, dtype=torch.long)
-    else:
-        bin_indices = torch.bucketize(y_prob, bins)
+    # Log spaced
+    # edges = torch.logspace(
+    #     np.log10(y_prob.min().item()), 0.0, steps=n_bins + 1
+    # )
+    # edges[0] = 0.0
+    # edges[-1] = 1.0
+    # Linear spaced
+    edges = torch.linspace(0.0, 1.0, steps=n_bins + 1)
+    idx = torch.bucketize(y_prob, edges, right=True) - 1
+    bin_indices = idx.clamp(0, n_bins - 1)
 
+    # print("Y_PROB MIN MAX: ", y_prob.min().item(), y_prob.max().item())
+    # print("Non Empty Bins: ", torch.unique(bin_indices))
     ECE = 0.0
     for bin_idx in range(n_bins):
         bin_mask = bin_indices == bin_idx
@@ -284,7 +340,6 @@ def calculate_binary_ece(y_true, y_prob, equal_frequency_bins=False, n_bins=10):
         ECE += (count_in_bin / n_instances_total) * abs(
             freq_true_in_bin - mean_prob_in_bin
         )
-
     return ECE
 
 
@@ -720,7 +775,11 @@ def check_sub_k_in_ranking(sub_ranking, full_ranking) -> bool:
     Returns:
         bool: True if the sub_ranking is contained in the full_ranking, False otherwise
     """
-    positions_of_sub_ranking = [full_ranking.index(item) for item in sub_ranking]
+    try:
+        positions_of_sub_ranking = [full_ranking.index(item) for item in sub_ranking]
+    except ValueError:
+        # print("Item from sub-ranking not found in full ranking. Obviously False.")
+        return False
     return positions_of_sub_ranking == sorted(positions_of_sub_ranking)
 
 
@@ -752,7 +811,13 @@ def construct_sub_k_tensors(
 
 
 def calculate_sub_k_calibration(
-    items: list[int], y_true: torch.Tensor, y_pred_proba: dict[tuple[int], float], k=2
+    items: list[int],
+    y_true: torch.Tensor,
+    y_pred_proba: dict[tuple[int], float],
+    k=2,
+    rank_weighting="uniform",
+    bin_spacing="linear",
+    discrepancy="abs",
 ):
     """This method calucates the sub_k calibration as definined in our work.
     For this it constructs all rankings of `items` which are of length `k` and then aggregates `y_pred_proba` accordingly.
@@ -762,6 +827,7 @@ def calculate_sub_k_calibration(
         y_true (torch.Tensor): The true rankings. Shape (n_samples, n_items)
         y_pred_proba (list[dict[tuple[int], float]]): The predicted probabilities for each ranking
         k (int, optional): The length of the sub-rankings to consider. Defaults to 2.
+        rank_weighting (str, optional): The method to weight the ECE values. Defaults to "uniform".
 
     Returns:
         dict: The ECE per sub-ranking and the total ECE
@@ -769,21 +835,48 @@ def calculate_sub_k_calibration(
     from itertools import combinations, permutations
 
     possible_sub_rankings = list(permutations(items, k))
+    sub_rankings_ece = []
     for sub_ranking in possible_sub_rankings:
         # Construct the binary classification tensors
         y_true_sub, y_prob_sub = construct_sub_k_tensors(
             list(sub_ranking), y_true, y_pred_proba
         )
         # Calculate the ECE for this sub-ranking
-        ece_sub_ranking = calculate_binary_ece(y_true_sub, y_prob_sub)
+        ece_sub_ranking = calculate_binary_ece_general(
+            y_true_sub,
+            y_prob_sub,
+            discrepancy=discrepancy,
+            eps=1e-12,
+            bin_spacing=bin_spacing,
+        )
         # print("Finished sub-ranking:", sub_ranking, " ECE:", ece_sub_ranking)
-        if "sub_rankings_ece" not in locals():
-            sub_rankings_ece = [{"sub_ranking": sub_ranking, "ece": ece_sub_ranking}]
-        else:
-            sub_rankings_ece.append(
-                {"sub_ranking": sub_ranking, "ece": ece_sub_ranking}
-            )
-    total_ece = np.mean([r["ece"] for r in sub_rankings_ece])
+        weight_prev = float(y_true_sub.mean().item())
+        weight_pred = float(y_prob_sub.mean().item())
+
+        sub_rankings_ece.append(
+            {
+                "sub_ranking": sub_ranking,
+                "ece": ece_sub_ranking,
+                "weight_prevalence": weight_prev,
+                "weight_pred_mass": weight_pred,
+            }
+        )
+    # Normalize the weights
+    total_weight_prev = sum(r["weight_prevalence"] for r in sub_rankings_ece)
+    total_weight_pred = sum(r["weight_pred_mass"] for r in sub_rankings_ece)
+    for r in sub_rankings_ece:
+        r["weight_prevalence"] /= total_weight_prev
+        r["weight_pred_mass"] /= total_weight_pred
+
+    if rank_weighting == "uniform":
+        total_ece = np.mean([r["ece"] for r in sub_rankings_ece])
+    elif rank_weighting == "prevalence":
+        total_ece = np.sum(
+            [r["ece"] * r["weight_prevalence"] for r in sub_rankings_ece]
+        )
+    elif rank_weighting == "pred_mass":
+        total_ece = np.sum([r["ece"] * r["weight_pred_mass"] for r in sub_rankings_ece])
+
     return {"sub_rankings_ece": sub_rankings_ece, "total_ece": total_ece}
 
 
@@ -839,7 +932,13 @@ def construct_top_k_tensors(
 
 
 def calculate_top_k_calibration(
-    items: list[int], y_true: torch.Tensor, y_pred_proba: dict[list[int], float], k=2
+    items: list[int],
+    y_true: torch.Tensor,
+    y_pred_proba: dict[list[int], float],
+    k=2,
+    rank_weighting="uniform",
+    bin_spacing="linear",
+    discrepancy="abs",
 ):
     """This method calucates the top_k calibration as definined in our work.
     For this it constructs all rankings of `items` which are of length `k` and then aggregates `y_pred_proba` accordingly.
@@ -849,28 +948,56 @@ def calculate_top_k_calibration(
         y_true (torch.Tensor): The true rankings. Shape (n_samples, n_items)
         y_pred_proba (list[dict[list[int], float]]): The predicted probabilities for each ranking.
         k (int, optional): The length of the top-k rankings to consider. Defaults to 2.
+        rank_weighting (str, optional): The method to weight the ECE values. Defaults to "uniform".
+        Options are "uniform", "prevalence", and "pred_mass".
     Returns:
         dict: The ECE per top-k ranking and the total ECE
     """
     from itertools import combinations, permutations
 
     possible_top_k_rankings = list(permutations(items, k))
+    top_k_rankings_ece = []
     for top_k_ranking in possible_top_k_rankings:
         # Construct the binary classification tensors
         y_true_top_k, y_prob_top_k = construct_top_k_tensors(
             list(top_k_ranking), y_true, y_pred_proba
         )
         # Calculate the ECE for this top-k ranking
-        ece_top_k_ranking = calculate_binary_ece(y_true_top_k, y_prob_top_k)
-        if "top_k_rankings_ece" not in locals():
-            top_k_rankings_ece = [
-                {"top_k_ranking": top_k_ranking, "ece": ece_top_k_ranking}
-            ]
-        else:
-            top_k_rankings_ece.append(
-                {"top_k_ranking": top_k_ranking, "ece": ece_top_k_ranking}
-            )
-    total_ece = np.mean([r["ece"] for r in top_k_rankings_ece])
+        ece_top_k_ranking = calculate_binary_ece_general(
+            y_true_top_k,
+            y_prob_top_k,
+            discrepancy=discrepancy,
+            eps=1e-12,
+            bin_spacing=bin_spacing,
+        )
+
+        weights_prev = float(y_true_top_k.mean().item())
+        weights_pred = float(y_prob_top_k.mean().item())
+        top_k_rankings_ece.append(
+            {
+                "top_k_ranking": top_k_ranking,
+                "ece": ece_top_k_ranking,
+                "weight_prevalence": weights_prev,
+                "weight_pred_mass": weights_pred,
+            }
+        )
+    total_weight_prev = sum(r["weight_prevalence"] for r in top_k_rankings_ece)
+    total_weight_pred = sum(r["weight_pred_mass"] for r in top_k_rankings_ece)
+    for r in top_k_rankings_ece:
+        r["weight_prevalence"] /= total_weight_prev
+        r["weight_pred_mass"] /= total_weight_pred
+
+    if rank_weighting == "uniform":
+        total_ece = np.mean([r["ece"] for r in top_k_rankings_ece])
+    elif rank_weighting == "prevalence":
+        total_ece = np.sum(
+            [r["ece"] * r["weight_prevalence"] for r in top_k_rankings_ece]
+        )
+    elif rank_weighting == "pred_mass":
+        total_ece = np.sum(
+            [r["ece"] * r["weight_pred_mass"] for r in top_k_rankings_ece]
+        )
+
     return {"top_k_rankings_ece": top_k_rankings_ece, "total_ece": total_ece}
 
 
