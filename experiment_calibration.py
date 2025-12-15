@@ -56,6 +56,18 @@ parser.add_argument(
     default="uniform",
     help='Rank weighting scheme for ECE calculation. Options are "uniform", "prevalence", and "pred_mass".',
 )
+parser.add_argument(
+    "--discrepancy",
+    type=str,
+    default="abs",
+    help='Discrepancy measure for ECE calculation. Options are "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl".',
+)
+parser.add_argument(
+    "--bin_spacing",
+    type=str,
+    default="linear",
+    help='Bin spacing for ECE calculation. Options are "linear" and "log".',
+)
 args = parser.parse_args()
 
 
@@ -1111,7 +1123,9 @@ def visualize_ece_results(
         bbox_to_anchor=(1.02, 1),
     )
     legend.get_frame().set_alpha(0.9)
-    _style_boxplot_axis(ax, f"Sub-k ECE per model on {dataset_name}", "Sub-k ECE", y_upper=1.001)
+    _style_boxplot_axis(
+        ax, f"Sub-k ECE per model on {dataset_name}", "Sub-k ECE", y_upper=1.001
+    )
     fig.tight_layout()
     fig.savefig(
         f"{save_folder}subk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.png"
@@ -1184,7 +1198,7 @@ def visualize_ece_results(
         linewidth=1.2,
         width=0.55,
         fliersize=0,
-        log_scale=log_scale,    
+        log_scale=log_scale,
     )
     sns.stripplot(
         data=top_df,
@@ -1213,7 +1227,9 @@ def visualize_ece_results(
         bbox_to_anchor=(1.02, 1),
     )
     legend.get_frame().set_alpha(0.9)
-    _style_boxplot_axis(ax, f"Top-k ECE per model on {dataset_name}", "Top-k ECE", y_upper=1.001)
+    _style_boxplot_axis(
+        ax, f"Top-k ECE per model on {dataset_name}", "Top-k ECE", y_upper=1.001
+    )
     fig.tight_layout(pad=2.0)
     fig.savefig(
         f"{save_folder}topk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.png"
@@ -1289,7 +1305,9 @@ def visualize_ece_results(
         markeredgewidth=0,
         ax=axes[0, 0],
     )
-    _style_lineplot_axis(axes[0, 0], "Sub-k ECE vs k", "k", "ECE", k_values_sub_k, y_upper=1.001)
+    _style_lineplot_axis(
+        axes[0, 0], "Sub-k ECE vs k", "k", "ECE", k_values_sub_k, y_upper=1.001
+    )
 
     print("Visualizing Top-k Rankwise ECE vs k with Error Bars...")
     sns.lineplot(
@@ -1306,7 +1324,9 @@ def visualize_ece_results(
         markeredgewidth=0,
         ax=axes[0, 1],
     )
-    _style_lineplot_axis(axes[0, 1], "Top-k ECE vs k", "k", "ECE", k_values_top_k, y_upper=1.001)
+    _style_lineplot_axis(
+        axes[0, 1], "Top-k ECE vs k", "k", "ECE", k_values_top_k, y_upper=1.001
+    )
     print("Visualizing Sub-k Full-Rank Rankwise ECE vs k with Error Bars...")
     sns.lineplot(
         data=sub_full_rank_df,
@@ -1374,7 +1394,6 @@ def visualize_ece_results(
         title_fontsize=12,
         loc="upper left",
         bbox_to_anchor=(1.02, 1),
-        
     )
     legend_top.get_frame().set_alpha(0.9)
 
@@ -1420,9 +1439,9 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = "political"
-    RANK_WEIGHTING = "prevalence"  # Options: "uniform", "prevalence", "pred_mass"
-    DISCREPANCY = "jeff"  # Options: "abs", "jeff", "kl"
+    dataset_name = "vehicle"
+    RANK_WEIGHTING = "uniform"  # Options: "uniform", "prevalence", "pred_mass"
+    DISCREPANCY = "abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
     BIN_SPACING = "linear"  # Options: "linear", "log"
 
     if dataset_name.startswith("synthetic"):
