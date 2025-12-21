@@ -1,6 +1,7 @@
 """This module contains unit tests for utility functions in cal_pref.utils."""
 
 import itertools
+import numpy as np
 import torch
 from cal_pref.utils import (
     calculate_binary_ece,
@@ -147,7 +148,7 @@ def test_construct_top_k_tensors():
 
     rankings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
     ranking_to_probs = {(3, 1, 4, 2, 5): [0.6, 0.3], (2, 1, 3, 4, 5): [0.4, 0.7]}
-    
+
     top_k_ranking = [3, 1, 4]
 
     top_k_tensors, top_k_probs = construct_top_k_tensors(
@@ -160,7 +161,11 @@ def test_construct_top_k_tensors():
     assert torch.allclose(top_k_probs, expected_probs)
 
     rankings = torch.tensor([[3, 1, 4, 2, 5], [1, 2, 3, 4, 5]], dtype=torch.long)
-    ranking_to_probs = {(3, 1, 4, 2, 5): [0.6,0.3], (3, 1, 4, 4, 5): [0.4,0], (1, 2, 3, 4, 5): [0,0.7]}
+    ranking_to_probs = {
+        (3, 1, 4, 2, 5): [0.6, 0.3],
+        (3, 1, 4, 4, 5): [0.4, 0],
+        (1, 2, 3, 4, 5): [0, 0.7],
+    }
     top_k_ranking = [3, 1, 4]
 
     top_k_tensors, top_k_probs = construct_top_k_tensors(
@@ -180,9 +185,9 @@ def test_top_k_calibration():
     )
     ranking_to_prob = {
         (1, 2, 3): [1 / 3] * len(rankings),
-        (1, 3, 2): [0   ] * len(rankings),
-        (2, 1, 3): [0   ] * len(rankings),
-        (2, 3, 1): [    1 / 3] * len(rankings),
+        (1, 3, 2): [0] * len(rankings),
+        (2, 1, 3): [0] * len(rankings),
+        (2, 3, 1): [1 / 3] * len(rankings),
         (3, 1, 2): [0] * len(rankings),
         (3, 2, 1): [1 / 3] * len(rankings),
     }
@@ -429,3 +434,48 @@ def test_top_k_full_rank_calibration():
     total_ece = results["total_ece"]
     expected_ece = 0.0  # This example is top-k fully calibrated
     assert abs(total_ece - expected_ece) < 1e-6
+
+
+def test_from_bradley_terry_to_plackett_luce():
+    from cal_pref.utils import (
+        from_bradley_terry_to_placet_luce_old,
+        from_bradley_terry_to_placket_luce_simple,
+        from_bradley_terry_to_placket_luce_vectorized,
+        from_bradley_terry_to_placket_luce_map,
+    )
+
+    rng = np.random.default_rng(42)
+    pl_scores = np.array([0.2, 0.5, 0.3])
+    bt_matrix = np.zeros((1, 3, 3))
+    for i in range(3):
+        for j in range(3):
+            if i != j:
+                bt_matrix[0, i, j] = pl_scores[i] / (pl_scores[i] + pl_scores[j])
+    recovered_pl_scores = from_bradley_terry_to_placket_luce_simple(
+        rng=rng, pair_order_matrices=bt_matrix, n_iterations=1000
+    )[0]
+    # Normalize the scores
+    recovered_pl_scores /= np.sum(recovered_pl_scores)
+    assert np.allclose(pl_scores, recovered_pl_scores, atol=1e-6)
+    
+    
+    # recovered_pl_scores = from_bradley_terry_to_placket_luce_map(
+    #     rng=rng, pair_order_matrices=bt_matrix, n_iterations=100_000
+    # )[0]
+    # # Normalize the scores
+    # recovered_pl_scores /= np.sum(recovered_pl_scores)
+    # assert np.allclose(pl_scores, recovered_pl_scores, atol=1e-6)
+    
+    recovered_pl_scores = from_bradley_terry_to_placket_luce_vectorized(
+        rng=rng, pair_order_matrices=bt_matrix, n_iterations=100
+    )[0]
+    # Normalize the scores
+    recovered_pl_scores /= np.sum(recovered_pl_scores)
+    assert np.allclose(pl_scores, recovered_pl_scores, atol=1e-6)
+    
+    recovered_pl_scores = from_bradley_terry_to_placet_luce_old(
+        rng=rng, pair_order_matrices=bt_matrix, n_iterations=1000
+    )[0]
+    # Normalize the scores
+    recovered_pl_scores /= np.sum(recovered_pl_scores)
+    assert np.allclose(pl_scores, recovered_pl_scores, atol=1e-6)

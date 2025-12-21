@@ -291,8 +291,10 @@ def calculate_binary_ece_general(
             q = min(max(q_hat, eps), 1 - eps)
             kl_pq = p * np.log(p / q) + (1 - p) * np.log((1 - p) / (1 - q))
             kl_qp = q * np.log(q / p) + (1 - q) * np.log((1 - q) / (1 - p))
-            d = (kl_pq + kl_qp)
-            d = 1 - np.exp(-d) # scale to [0,1], where 1 is maximum divergence and 0 is no divergence
+            d = kl_pq + kl_qp
+            d = 1 - np.exp(
+                -d
+            )  # scale to [0,1], where 1 is maximum divergence and 0 is no divergence
         else:
             raise ValueError(discrepancy)
 
@@ -301,7 +303,9 @@ def calculate_binary_ece_general(
     return float(ece)
 
 
-def calculate_binary_ece(y_true, y_prob, n_bins=10):
+def calculate_binary_ece(
+    y_true: torch.Tensor, y_prob: torch.Tensor, n_bins=10
+) -> float:
     """Calculates the ECE for binary classification.
 
     Args:
@@ -876,6 +880,12 @@ def calculate_sub_k_calibration(
         )
     elif rank_weighting == "pred_mass":
         total_ece = np.sum([r["ece"] * r["weight_pred_mass"] for r in sub_rankings_ece])
+    elif rank_weighting == "most_confident":
+        # Sum only the sub-ranking with 5 the highest predicted mass
+        sorted_ece = list(
+            sorted(sub_rankings_ece, key=lambda x: x["weight_pred_mass"], reverse=True)
+        )
+        total_ece = sum(r["ece"] for r in sorted_ece[:5]) / 5.0
 
     return {"sub_rankings_ece": sub_rankings_ece, "total_ece": total_ece}
 
@@ -997,6 +1007,14 @@ def calculate_top_k_calibration(
         total_ece = np.sum(
             [r["ece"] * r["weight_pred_mass"] for r in top_k_rankings_ece]
         )
+    elif rank_weighting == "most_confident":
+        # Sum only the sub-ranking with 5 the highest predicted mass
+        sorted_ece = list(
+            sorted(
+                top_k_rankings_ece, key=lambda x: x["weight_pred_mass"], reverse=True
+            )
+        )
+        total_ece = sum(r["ece"] for r in sorted_ece[:5]) / 5.0
 
     return {"top_k_rankings_ece": top_k_rankings_ece, "total_ece": total_ece}
 
@@ -1005,32 +1023,65 @@ def calculate_top_k_calibration(
 ## Bradley-Terry to Plackett-Luce  #
 ###################################
 def from_bradley_terry_to_placet_luce_old(rng, pair_order_matrices, n_iterations=20):
-    placket_luce_weights = rng.random(
-        (pair_order_matrices.shape[0], pair_order_matrices.shape[1])
-    )
+    """Compute Plackett-Luce weights using Zermelo Algorithm based on Bradley Terry weights.
+
+    Args:
+        rng (_type_): random Number generator used for inizialisation of the algorithm.
+        pair_order_matrices (np.ndarray): The pair order matrix of shape (n_samples, n_items, n_items), where pair_order_matices[s,i,j] the probability of item i being preferred over j for sample s.
+        n_iterations (int, optional): The number of iterations for the approximation algorithm. Defaults to 20.
+
+    Returns:
+        np.ndarray: The plackett-luce weights of shape (n_samples, n_items)
+    """
+    eps = 1e-10
+    placket_luce_weights = (
+        rng.random((pair_order_matrices.shape[0], pair_order_matrices.shape[1])) + eps
+    )  # ensure positive init
 
     n_samples, n_items, _ = pair_order_matrices.shape
     for i_sample in range(n_samples):
-        scores = placket_luce_weights[i_sample, :]
+        scores = placket_luce_weights[i_sample, :].copy()
+
         for _ in range(n_iterations):
             for i_weight in range(n_items):
-                bradley_win_i = pair_order_matrices[
-                    i_sample, i_weight, :
-                ]  # shape = (n_items,)
-                nominator = bradley_win_i
-                denominator = pair_order_matrices[
-                    i_sample, i_weight, :
-                ] + pair_order_matrices[i_sample, :, i_weight] / (
-                    scores[i_weight] + scores + 1e-10
-                )
-                scores[i_weight] = (nominator / (denominator.sum() + 1e-10)).sum()
-        placket_luce_weights[i_sample, :] = scores / scores.sum()
+                a_i = pair_order_matrices[i_sample, i_weight, :]  # a_ij
+                a_j = pair_order_matrices[i_sample, :, i_weight]  # a_ji
+
+                # exclude diagonal j == i_weight
+                mask = np.ones(n_items, dtype=bool)
+                mask[i_weight] = False
+
+                wins_i = a_i[mask].sum()
+                games_ij = a_i[mask] + a_j[mask]  # a_ij + a_ji
+
+                denom = (games_ij / (scores[i_weight] + scores[mask] + eps)).sum()
+
+                scores[i_weight] = wins_i / (denom + eps)
+
+            # normalize to keep scale stable (PL weights are defined up to a constant)
+            s = scores.sum()
+            if s > 0:
+                scores = scores / s
+
+        placket_luce_weights[i_sample, :] = scores
+
     return placket_luce_weights
 
 
 def from_bradley_terry_to_placket_luce_simple(
     rng, pair_order_matrices, n_iterations=20
 ):
+    """Compute Plackett-Luce weights using (improved) Zermelo Algorithm based on Bradley Terry weights.
+    This function is the slowest variant, but it is the most straightforward to understand.
+
+    Args:
+        rng (_type_): random Number generator used for inizialisation of the algorithm.
+        pair_order_matrices (np.ndarray): The pair order matrix of shape (n_samples, n_items, n_items), where pair_order_matices[s,i,j] the probability of item i being preferred over j for sample s.
+        n_iterations (int, optional): The number of iterations for the approximation algorithm. Defaults to 20.
+
+    Returns:
+        np.ndarray: The plackett-luce weights of shape (n_samples, n_items)
+    """
     placket_luce_weights = rng.random(
         (pair_order_matrices.shape[0], pair_order_matrices.shape[1])
     )
@@ -1040,23 +1091,22 @@ def from_bradley_terry_to_placket_luce_simple(
         scores = placket_luce_weights[i_sample, :]
         for _ in range(n_iterations):
             for i_weight in range(n_items):
-                bradley_win_i = pair_order_matrices[
-                    i_sample, i_weight, :
-                ]  # shape = (n_items,)
-                # Calculate the Upper part of the fraction
-                upper_nominator = bradley_win_i * scores[i_weight]  # shape = (n_items,)
-                upper_denominator = scores[i_weight] + scores + 1e-10
+                a_i = pair_order_matrices[i_sample, i_weight, :]  # a_ij
+                a_j = pair_order_matrices[i_sample, :, i_weight]  # a_ji
 
-                # Compute the lower part of the fraction and update the weights
-                bradley_lose_i = pair_order_matrices[
-                    i_sample, :, i_weight
-                ]  # shape = (n_items,)
-                lower_nominator = bradley_lose_i
-                lower_denominator = upper_denominator
+                # exclude diagonal j == i_weight
+                mask = np.ones(n_items, dtype=bool)
+                mask[i_weight] = False
 
-                scores[i_weight] = (upper_nominator / upper_denominator).sum() / (
-                    lower_nominator / lower_denominator + 1e-10
-                ).sum()
+                nominator = (
+                    a_i[mask] * scores[mask] / (scores[i_weight] + scores[mask] + 1e-10)
+                )
+                denominator = a_j[mask] / (scores[i_weight] + scores[mask] + 1e-10)
+                scores[i_weight] = nominator.sum() / (denominator.sum() + 1e-10)
+            # normalize to keep scale stable (PL weights are defined up to a constant)
+            s = scores.sum()
+            if s > 0:
+                scores = scores / s
         placket_luce_weights[i_sample, :] = scores
     return placket_luce_weights
 
@@ -1064,67 +1114,93 @@ def from_bradley_terry_to_placket_luce_simple(
 def from_bradley_terry_to_placket_luce_vectorized(
     rng, pair_order_matrices, n_iterations=20
 ):
-    placket_luce_weights = rng.random(
-        (pair_order_matrices.shape[0], pair_order_matrices.shape[1])
+    """Vectorized variant of `from_bradley_terry_to_placket_luce_simple`.
+
+    Matches the update:
+        w_i <- sum_j a_ij * w_j / (w_i + w_j)   /   sum_j a_ji / (w_i + w_j)
+    (excluding j=i), applied independently per sample, with normalization each iteration.
+    """
+    eps = 1e-10
+    n_samples, n_items, _ = pair_order_matrices.shape
+
+    # Ensure float ndarray and don't mutate caller's array.
+    A = np.asarray(pair_order_matrices, dtype=float).copy()  # (S, I, J)
+
+    # Exclude diagonal comparisons.
+    diag = np.arange(n_items)
+    A[:, diag, diag] = 0.0
+
+    # Initialise positive scores.
+    placket_luce_weights = rng.random((n_samples, n_items)) + eps
+    s0 = placket_luce_weights.sum(axis=1, keepdims=True)
+    placket_luce_weights = np.where(
+        s0 > 0.0,
+        placket_luce_weights / s0,
+        np.ones_like(placket_luce_weights) / n_items,
     )
 
-    n_samples, n_items, _ = pair_order_matrices.shape
+    A_T = np.swapaxes(A, 1, 2)  # (S, I, J) where A_T[:, i, j] = a_ji
+
     for _ in range(n_iterations):
-        for item in range(n_items):
-            bradley_win_i = pair_order_matrices[
-                :, item, :
-            ]  # shape = (n_samples, n_items)
-            upper_nominator = (
-                bradley_win_i * placket_luce_weights[:, item][:, np.newaxis]
-            )  # shape = (n_samples, n_items)
-            upper_denominator = (
-                placket_luce_weights[:, item][:, np.newaxis]
-                + placket_luce_weights
-                + 1e-10
-            )
+        # denom_mat[s, i, j] = w_si + w_sj
+        denom_mat = (
+            placket_luce_weights[:, :, None] + placket_luce_weights[:, None, :] + eps
+        )
 
-            bradley_lose_i = pair_order_matrices[
-                :, :, item
-            ]  # shape = (n_samples, n_items)
-            lower_nominator = bradley_lose_i
-            lower_denominator = upper_denominator
+        numerator = (A * placket_luce_weights[:, None, :] / denom_mat).sum(axis=2)
+        denominator = (A_T / denom_mat).sum(axis=2)
 
-            placket_luce_weights[:, item] = (upper_nominator / upper_denominator).sum(
-                axis=1
-            ) / (lower_nominator / lower_denominator + 1e-10).sum(axis=1)
+        placket_luce_weights = numerator / (denominator + eps)
+
+        # Normalize per sample for stability.
+        s = placket_luce_weights.sum(axis=1, keepdims=True)
+        placket_luce_weights = np.where(
+            s > 0.0,
+            placket_luce_weights / s,
+            np.ones_like(placket_luce_weights) / float(n_items),
+        )
+
     return placket_luce_weights
 
 
 def from_bradley_terry_to_placket_luce_map(rng, pair_order_matrices, n_iterations=20):
-    placket_luce_weights = rng.random(
-        (pair_order_matrices.shape[0], pair_order_matrices.shape[1])
-    )
+    """MAP-style variant of the Zermelo update, vectorized.
 
+    This matches the math of the loop-based implementation:
+
+      score_term_i = 1 / (w_i + 1)
+      upper_i = score_term_i + sum_j a_ij * w_i / (w_i + w_j)
+      lower_i = score_term_i + sum_j a_ji       / (w_i + w_j)
+      w_i <- upper_i / lower_i
+
+    (excluding i=j via zero diagonal), applied independently per sample.
+    """
+    eps = 1e-10
     n_samples, n_items, _ = pair_order_matrices.shape
+
+    A = np.asarray(pair_order_matrices, dtype=float).copy()  # (S, I, J)
+    diag = np.arange(n_items)
+    A[:, diag, diag] = 0.0
+    A_T = np.swapaxes(A, 1, 2)
+
+    placket_luce_weights = rng.random((n_samples, n_items)) + eps
+
     for _ in range(n_iterations):
-        for item in range(n_items):
-            score_term = 1.0 / (placket_luce_weights[:, item] + 1)
-            bradley_win_i = pair_order_matrices[
-                :, item, :
-            ]  # shape = (n_samples, n_items)
-            upper_nominator = (
-                bradley_win_i * placket_luce_weights[:, item][:, np.newaxis]
-            )  # shape = (n_samples, n_items)
-            upper_denominator = (
-                placket_luce_weights[:, item][:, np.newaxis]
-                + placket_luce_weights
-                + 1e-10
-            )
+        # denom_mat[s, i, j] = w_si + w_sj
+        denom_mat = (
+            placket_luce_weights[:, :, None] + placket_luce_weights[:, None, :] + eps
+        )
 
-            bradley_lose_i = pair_order_matrices[
-                :, :, item
-            ]  # shape = (n_samples, n_items)
-            lower_nominator = bradley_lose_i
-            lower_denominator = upper_denominator
+        score_term = 1.0 / (placket_luce_weights + 1.0)
 
-            upper_term = score_term + (upper_nominator / upper_denominator).sum(axis=1)
-            lower_term = score_term + (lower_nominator / lower_denominator + 1e-10).sum(
-                axis=1
-            )
-            placket_luce_weights[:, item] = upper_term / lower_term
+        # upper_sum[s, i] = sum_j a_ij * w_i / (w_i + w_j)
+        upper_sum = (A * placket_luce_weights[:, :, None] / denom_mat).sum(axis=2)
+        # lower_sum[s, i] = sum_j a_ji / (w_i + w_j)
+        lower_sum = (A_T / denom_mat).sum(axis=2)
+
+        upper_term = score_term + upper_sum
+        lower_term = score_term + lower_sum
+
+        placket_luce_weights = upper_term / (lower_term + eps)
+
     return placket_luce_weights

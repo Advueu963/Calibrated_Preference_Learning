@@ -265,7 +265,7 @@ def train_placket_luce_model_brier(
 
 
 def train_placket_luce_rpc_model(
-    baseline_estimator, X_train, y_train, X_test, n_items, method_rpc_pl="map"
+    baseline_estimator, X_train, y_train, X_test, n_items, method_rpc_pl="vectorized"
 ):
     """Train a Plackett-Luce model with a rank-based loss function.
 
@@ -1439,8 +1439,10 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = "vehicle"
-    RANK_WEIGHTING = "uniform"  # Options: "uniform", "prevalence", "pred_mass"
+    dataset_name = "political"
+    RANK_WEIGHTING = (
+        "most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
+    )
     DISCREPANCY = "abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
     BIN_SPACING = "linear"  # Options: "linear", "log"
 
@@ -1549,7 +1551,7 @@ if __name__ == "__main__":
                 y_train,
                 X_test,
                 n_items,
-                method_rpc_pl="map",
+                method_rpc_pl="vectorized",
             )
         )
 

@@ -21,6 +21,7 @@ classifiers = [
 
 dependencies = [
     "cython>=3.1.4",
+    "huggingface-hub>=1.2.3",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.6",
     "mpltern>=1.0.4",
