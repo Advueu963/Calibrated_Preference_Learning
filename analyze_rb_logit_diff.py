@@ -265,7 +265,6 @@ def visualize_accuracy_rejection_curve(results: list[dict], k: int = 10):
     Curves are colored by ECE (low=red, high=blue).
     """
 
-
     if not results:
         return
 
@@ -486,6 +485,773 @@ def visualize_accuracy_rejection_curve_by_rank(results: list[dict], k: int = 10)
     )
 
 
+def visualize_accuracy_rejection_curve_by_factuality(results: list[dict], k: int = 10):
+    """Plot accuracy–rejection curves colored by factuality.
+
+    X-axis: fraction removed (reject p% highest entropy)
+    Y-axis: accuracy on remaining examples
+    Curves are colored by factuality (lower = better).
+    """
+
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+
+    if not results:
+        return
+
+    # Use an error-style score so that "lower = better" consistently.
+    factuality_err = 100 - np.array(
+        [float(r["factuality"]) for r in results], dtype=float
+    )
+    vmin = float(np.min(factuality_err))
+    vmax = float(np.max(factuality_err))
+    if np.isclose(vmin, vmax):
+        vmin -= 1e-12
+        vmax += 1e-12
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.cm.coolwarm_r  # low (better)=red, high (worse)=blue
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    # Highlight extremes for intuition
+    factuality_err_by_model = {
+        r["model"]: 100 - float(r["factuality"]) for r in results
+    }
+    sorted_by_factuality = sorted(
+        results, key=lambda x: factuality_err_by_model[x["model"]]
+    )
+    top_k = min(k, len(sorted_by_factuality))
+    bottom_k = min(k, len(sorted_by_factuality))
+    top_models = {r["model"] for r in sorted_by_factuality[:top_k]}
+    bottom_models = {r["model"] for r in sorted_by_factuality[-bottom_k:]}
+
+    highlight_red = "#D62728"  # vivid red
+    highlight_blue = "#1F77B4"  # vivid blue
+    muted_alpha = 0.25
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
+
+    # Plot in order of improving factuality so the best models are prominent
+    for r in sorted_by_factuality:
+        entropy = np.asarray(r["entropy"], dtype=float)
+        correct = np.asarray(r["model_correct_alternatives"], dtype=float)
+
+        if entropy.shape[0] == 0:
+            continue
+        if entropy.shape[0] != correct.shape[0]:
+            raise ValueError(
+                f"Entropy and correctness length mismatch for {r.get('model', '<unknown>')}: "
+                f"{entropy.shape[0]} vs {correct.shape[0]}"
+            )
+
+        order = np.argsort(entropy)[::-1]
+        correct_sorted = correct[order]
+
+        suffix_correct = np.cumsum(correct_sorted[::-1])[::-1]
+        remaining = np.arange(len(correct_sorted), 0, -1)
+        acc_remaining = suffix_correct / remaining
+        frac_removed = np.arange(len(correct_sorted)) / len(correct_sorted)
+
+        model_name = r["model"]
+        factuality_value = float(factuality_err_by_model[model_name])
+        base_color = cmap(norm(factuality_value))
+        color = base_color
+        lw = 1.6
+        alpha = muted_alpha
+        zorder = 1
+
+        if model_name in top_models:
+            color = highlight_red
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+        elif model_name in bottom_models:
+            color = highlight_blue
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+
+        ax.plot(
+            frac_removed,
+            acc_remaining,
+            color=color,
+            lw=lw,
+            alpha=alpha,
+            zorder=zorder,
+        )
+
+    ax.set_xlabel("Fraction removed (reject highest entropy first)")
+    ax.set_ylabel("Accuracy on remaining examples")
+    ax.set_title("Accuracy–Rejection Curve colored by factuality rank")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.35)
+
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+    cbar.set_label("Factuality Score (lower = better)")
+
+    # Add a tiny legend explaining the highlights (avoid listing all models)
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Line2D(
+            [0], [0], color=highlight_red, lw=3.0, label=f"Lowest {top_k} factuality"
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=highlight_blue,
+            lw=3.0,
+            label=f"Highest {bottom_k} factuality",
+        ),
+    ]
+    ax.legend(handles=handles, frameon=False, loc="lower left")
+
+    fig.savefig(
+        f"accuracy_rejection_curve_entropy_factuality_colored_{k}.png",
+        dpi=200,
+        bbox_inches="tight",
+    )
+
+
+def visualize_accuracy_rejection_curve_by_math(results: list[dict], k: int = 10):
+    """Plot accuracy–rejection curves colored by math.
+
+    X-axis: fraction removed (reject p% highest entropy)
+    Y-axis: accuracy on remaining examples
+    Curves are colored by math (lower = better).
+    """
+
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+
+    if not results:
+        return
+
+    # Use an error-style score so that "lower = better" consistently.
+    math_err = 100 - np.array([float(r["math"]) for r in results], dtype=float)
+    vmin = float(np.min(math_err))
+    vmax = float(np.max(math_err))
+    if np.isclose(vmin, vmax):
+        vmin -= 1e-12
+        vmax += 1e-12
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.cm.coolwarm_r  # low (better)=red, high (worse)=blue
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    # Highlight extremes for intuition
+    math_err_by_model = {r["model"]: 100 - float(r["math"]) for r in results}
+    sorted_by_math = sorted(results, key=lambda x: math_err_by_model[x["model"]])
+    top_k = min(k, len(sorted_by_math))
+    bottom_k = min(k, len(sorted_by_math))
+    top_models = {r["model"] for r in sorted_by_math[:top_k]}
+    bottom_models = {r["model"] for r in sorted_by_math[-bottom_k:]}
+
+    highlight_red = "#D62728"  # vivid red
+    highlight_blue = "#1F77B4"  # vivid blue
+    muted_alpha = 0.25
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
+
+    # Plot in order of improving math so the best models are prominent
+    for r in sorted_by_math:
+        entropy = np.asarray(r["entropy"], dtype=float)
+        correct = np.asarray(r["model_correct_alternatives"], dtype=float)
+
+        if entropy.shape[0] == 0:
+            continue
+        if entropy.shape[0] != correct.shape[0]:
+            raise ValueError(
+                f"Entropy and correctness length mismatch for {r.get('model', '<unknown>')}: "
+                f"{entropy.shape[0]} vs {correct.shape[0]}"
+            )
+
+        order = np.argsort(entropy)[::-1]
+        correct_sorted = correct[order]
+
+        suffix_correct = np.cumsum(correct_sorted[::-1])[::-1]
+        remaining = np.arange(len(correct_sorted), 0, -1)
+        acc_remaining = suffix_correct / remaining
+        frac_removed = np.arange(len(correct_sorted)) / len(correct_sorted)
+
+        model_name = r["model"]
+        math_value = float(math_err_by_model[model_name])
+        base_color = cmap(norm(math_value))
+        color = base_color
+        lw = 1.6
+        alpha = muted_alpha
+        zorder = 1
+
+        if model_name in top_models:
+            color = highlight_red
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+        elif model_name in bottom_models:
+            color = highlight_blue
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+
+        ax.plot(
+            frac_removed,
+            acc_remaining,
+            color=color,
+            lw=lw,
+            alpha=alpha,
+            zorder=zorder,
+        )
+
+    ax.set_xlabel("Fraction removed (reject highest entropy first)")
+    ax.set_ylabel("Accuracy on remaining examples")
+    ax.set_title("Accuracy–Rejection Curve colored by math rank")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.35)
+
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+    cbar.set_label("Math Score (lower = better)")
+
+    # Add a tiny legend explaining the highlights (avoid listing all models)
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Line2D([0], [0], color=highlight_red, lw=3.0, label=f"Lowest {top_k} math"),
+        Line2D(
+            [0], [0], color=highlight_blue, lw=3.0, label=f"Highest {bottom_k} math"
+        ),
+    ]
+    ax.legend(handles=handles, frameon=False, loc="lower left")
+
+    fig.savefig(
+        f"accuracy_rejection_curve_entropy_math_colored_{k}.png",
+        dpi=200,
+        bbox_inches="tight",
+    )
+
+
+def visualize_accuracy_rejection_curve_by_safety(results: list[dict], k: int = 10):
+    """Plot accuracy–rejection curves colored by safety.
+
+    X-axis: fraction removed (reject p% highest entropy)
+    Y-axis: accuracy on remaining examples
+    Curves are colored by safety (lower = better).
+    """
+
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+
+    if not results:
+        return
+
+    safety_err = 100 - np.array([float(r["safety"]) for r in results], dtype=float)
+    vmin = float(np.min(safety_err))
+    vmax = float(np.max(safety_err))
+    if np.isclose(vmin, vmax):
+        vmin -= 1e-12
+        vmax += 1e-12
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.cm.coolwarm_r  # low (better)=red, high (worse)=blue
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    safety_err_by_model = {r["model"]: 100 - float(r["safety"]) for r in results}
+    sorted_by_safety = sorted(results, key=lambda x: safety_err_by_model[x["model"]])
+    top_k = min(k, len(sorted_by_safety))
+    bottom_k = min(k, len(sorted_by_safety))
+    top_models = {r["model"] for r in sorted_by_safety[:top_k]}
+    bottom_models = {r["model"] for r in sorted_by_safety[-bottom_k:]}
+
+    highlight_red = "#D62728"
+    highlight_blue = "#1F77B4"
+    muted_alpha = 0.25
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
+
+    for r in sorted_by_safety:
+        entropy = np.asarray(r["entropy"], dtype=float)
+        correct = np.asarray(r["model_correct_alternatives"], dtype=float)
+
+        if entropy.shape[0] == 0:
+            continue
+        if entropy.shape[0] != correct.shape[0]:
+            raise ValueError(
+                f"Entropy and correctness length mismatch for {r.get('model', '<unknown>')}: "
+                f"{entropy.shape[0]} vs {correct.shape[0]}"
+            )
+
+        order = np.argsort(entropy)[::-1]
+        correct_sorted = correct[order]
+
+        suffix_correct = np.cumsum(correct_sorted[::-1])[::-1]
+        remaining = np.arange(len(correct_sorted), 0, -1)
+        acc_remaining = suffix_correct / remaining
+        frac_removed = np.arange(len(correct_sorted)) / len(correct_sorted)
+
+        model_name = r["model"]
+        safety_value = float(safety_err_by_model[model_name])
+        color = cmap(norm(safety_value))
+        lw = 1.6
+        alpha = muted_alpha
+        zorder = 1
+
+        if model_name in top_models:
+            color = highlight_red
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+        elif model_name in bottom_models:
+            color = highlight_blue
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+
+        ax.plot(
+            frac_removed, acc_remaining, color=color, lw=lw, alpha=alpha, zorder=zorder
+        )
+
+    ax.set_xlabel("Fraction removed (reject highest entropy first)")
+    ax.set_ylabel("Accuracy on remaining examples")
+    ax.set_title("Accuracy–Rejection Curve colored by safety")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.35)
+
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+    cbar.set_label("Safety Score (lower = better)")
+
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Line2D([0], [0], color=highlight_red, lw=3.0, label=f"Lowest {top_k} safety"),
+        Line2D(
+            [0], [0], color=highlight_blue, lw=3.0, label=f"Highest {bottom_k} safety"
+        ),
+    ]
+    ax.legend(handles=handles, frameon=False, loc="lower left")
+
+    fig.savefig(
+        f"accuracy_rejection_curve_entropy_safety_colored_{k}.png",
+        dpi=200,
+        bbox_inches="tight",
+    )
+
+
+def visualize_accuracy_rejection_curve_by_focus(results: list[dict], k: int = 10):
+    """Plot accuracy–rejection curves colored by focus.
+
+    X-axis: fraction removed (reject p% highest entropy)
+    Y-axis: accuracy on remaining examples
+    Curves are colored by focus (lower = better).
+    """
+
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+
+    if not results:
+        return
+
+    focus_err = 100 - np.array([float(r["focus"]) for r in results], dtype=float)
+    vmin = float(np.min(focus_err))
+    vmax = float(np.max(focus_err))
+    if np.isclose(vmin, vmax):
+        vmin -= 1e-12
+        vmax += 1e-12
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.cm.coolwarm_r
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    focus_err_by_model = {r["model"]: 100 - float(r["focus"]) for r in results}
+    sorted_by_focus = sorted(results, key=lambda x: focus_err_by_model[x["model"]])
+    top_k = min(k, len(sorted_by_focus))
+    bottom_k = min(k, len(sorted_by_focus))
+    top_models = {r["model"] for r in sorted_by_focus[:top_k]}
+    bottom_models = {r["model"] for r in sorted_by_focus[-bottom_k:]}
+
+    highlight_red = "#D62728"
+    highlight_blue = "#1F77B4"
+    muted_alpha = 0.25
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
+
+    for r in sorted_by_focus:
+        entropy = np.asarray(r["entropy"], dtype=float)
+        correct = np.asarray(r["model_correct_alternatives"], dtype=float)
+
+        if entropy.shape[0] == 0:
+            continue
+        if entropy.shape[0] != correct.shape[0]:
+            raise ValueError(
+                f"Entropy and correctness length mismatch for {r.get('model', '<unknown>')}: "
+                f"{entropy.shape[0]} vs {correct.shape[0]}"
+            )
+
+        order = np.argsort(entropy)[::-1]
+        correct_sorted = correct[order]
+
+        suffix_correct = np.cumsum(correct_sorted[::-1])[::-1]
+        remaining = np.arange(len(correct_sorted), 0, -1)
+        acc_remaining = suffix_correct / remaining
+        frac_removed = np.arange(len(correct_sorted)) / len(correct_sorted)
+
+        model_name = r["model"]
+        focus_value = float(focus_err_by_model[model_name])
+        color = cmap(norm(focus_value))
+        lw = 1.6
+        alpha = muted_alpha
+        zorder = 1
+
+        if model_name in top_models:
+            color = highlight_red
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+        elif model_name in bottom_models:
+            color = highlight_blue
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+
+        ax.plot(
+            frac_removed, acc_remaining, color=color, lw=lw, alpha=alpha, zorder=zorder
+        )
+
+    ax.set_xlabel("Fraction removed (reject highest entropy first)")
+    ax.set_ylabel("Accuracy on remaining examples")
+    ax.set_title("Accuracy–Rejection Curve colored by focus")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.35)
+
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+    cbar.set_label("Focus Score (lower = better)")
+
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Line2D([0], [0], color=highlight_red, lw=3.0, label=f"Lowest {top_k} focus"),
+        Line2D(
+            [0], [0], color=highlight_blue, lw=3.0, label=f"Highest {bottom_k} focus"
+        ),
+    ]
+    ax.legend(handles=handles, frameon=False, loc="lower left")
+
+    fig.savefig(
+        f"accuracy_rejection_curve_entropy_focus_colored_{k}.png",
+        dpi=200,
+        bbox_inches="tight",
+    )
+
+
+def visualize_accuracy_rejection_curve_by_ties(results: list[dict], k: int = 10):
+    """Plot accuracy–rejection curves colored by ties.
+
+    X-axis: fraction removed (reject p% highest entropy)
+    Y-axis: accuracy on remaining examples
+    Curves are colored by ties (lower = better).
+    """
+
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+
+    if not results:
+        return
+
+    ties_err = 100 - np.array([float(r["ties"]) for r in results], dtype=float)
+    vmin = float(np.min(ties_err))
+    vmax = float(np.max(ties_err))
+    if np.isclose(vmin, vmax):
+        vmin -= 1e-12
+        vmax += 1e-12
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.cm.coolwarm_r
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    ties_err_by_model = {r["model"]: 100 - float(r["ties"]) for r in results}
+    sorted_by_ties = sorted(results, key=lambda x: ties_err_by_model[x["model"]])
+    top_k = min(k, len(sorted_by_ties))
+    bottom_k = min(k, len(sorted_by_ties))
+    top_models = {r["model"] for r in sorted_by_ties[:top_k]}
+    bottom_models = {r["model"] for r in sorted_by_ties[-bottom_k:]}
+
+    highlight_red = "#D62728"
+    highlight_blue = "#1F77B4"
+    muted_alpha = 0.25
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
+
+    for r in sorted_by_ties:
+        entropy = np.asarray(r["entropy"], dtype=float)
+        correct = np.asarray(r["model_correct_alternatives"], dtype=float)
+
+        if entropy.shape[0] == 0:
+            continue
+        if entropy.shape[0] != correct.shape[0]:
+            raise ValueError(
+                f"Entropy and correctness length mismatch for {r.get('model', '<unknown>')}: "
+                f"{entropy.shape[0]} vs {correct.shape[0]}"
+            )
+
+        order = np.argsort(entropy)[::-1]
+        correct_sorted = correct[order]
+
+        suffix_correct = np.cumsum(correct_sorted[::-1])[::-1]
+        remaining = np.arange(len(correct_sorted), 0, -1)
+        acc_remaining = suffix_correct / remaining
+        frac_removed = np.arange(len(correct_sorted)) / len(correct_sorted)
+
+        model_name = r["model"]
+        ties_value = float(ties_err_by_model[model_name])
+        color = cmap(norm(ties_value))
+        lw = 1.6
+        alpha = muted_alpha
+        zorder = 1
+
+        if model_name in top_models:
+            color = highlight_red
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+        elif model_name in bottom_models:
+            color = highlight_blue
+            lw = 3.0
+            alpha = 0.95
+            zorder = 3
+
+        ax.plot(
+            frac_removed, acc_remaining, color=color, lw=lw, alpha=alpha, zorder=zorder
+        )
+
+    ax.set_xlabel("Fraction removed (reject highest entropy first)")
+    ax.set_ylabel("Accuracy on remaining examples")
+    ax.set_title("Accuracy–Rejection Curve colored by ties")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.35)
+
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+    cbar.set_label("Ties Score (lower = better)")
+
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Line2D([0], [0], color=highlight_red, lw=3.0, label=f"Lowest {top_k} ties"),
+        Line2D(
+            [0], [0], color=highlight_blue, lw=3.0, label=f"Highest {bottom_k} ties"
+        ),
+    ]
+    ax.legend(handles=handles, frameon=False, loc="lower left")
+
+    fig.savefig(
+        f"accuracy_rejection_curve_entropy_ties_colored_{k}.png",
+        dpi=200,
+        bbox_inches="tight",
+    )
+
+
+def _accuracy_rejection_curve(entropy: np.ndarray, correct: np.ndarray):
+    """Compute accuracy–rejection curve arrays for a single model.
+
+    Returns:
+        frac_removed: shape (n,)
+        acc_remaining: shape (n,)
+    """
+    entropy = np.asarray(entropy, dtype=float)
+    correct = np.asarray(correct, dtype=float)
+
+    if entropy.shape[0] == 0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    if entropy.shape[0] != correct.shape[0]:
+        raise ValueError(
+            f"Entropy and correctness length mismatch: {entropy.shape[0]} vs {correct.shape[0]}"
+        )
+
+    order = np.argsort(entropy)[::-1]
+    correct_sorted = correct[order]
+
+    suffix_correct = np.cumsum(correct_sorted[::-1])[::-1]
+    remaining = np.arange(len(correct_sorted), 0, -1)
+    acc_remaining = suffix_correct / remaining
+    frac_removed = np.arange(len(correct_sorted)) / len(correct_sorted)
+    return frac_removed, acc_remaining
+
+
+def _interp_curve_to_grid(
+    frac_removed: np.ndarray, acc_remaining: np.ndarray, grid: np.ndarray
+) -> np.ndarray:
+    """Interpolate an accuracy–rejection curve onto a shared grid."""
+    frac_removed = np.asarray(frac_removed, dtype=float)
+    acc_remaining = np.asarray(acc_remaining, dtype=float)
+    grid = np.asarray(grid, dtype=float)
+
+    if frac_removed.size == 0:
+        return np.full_like(grid, np.nan, dtype=float)
+
+    # Ensure increasing x for interpolation.
+    order = np.argsort(frac_removed)
+    x = frac_removed[order]
+    y = acc_remaining[order]
+
+    # Clamp ends to avoid NaNs outside range.
+    return np.interp(grid, x, y, left=y[0], right=y[-1])
+
+
+def quantify_grouping_quality(
+    results: list[dict],
+    k: int = 10,
+    grid_size: int = 101,
+    output_csv: str = "accuracy_rejection_grouping_quality.csv",
+    output_plot: str = "accuracy_rejection_curve_group_variance_topk.png",
+):
+    """Quantify how well different metrics group accuracy–rejection curves.
+
+    For each metric, forms top-k (best) and bottom-k (worst) groups, then computes:
+      - within-group variance vs rejection fraction (and its mean over the grid)
+      - between-group separation (mean absolute difference between mean curves)
+      - a simple quality ratio: separation / (avg within-var + eps)
+
+    Saves a CSV summary and a plot of variance-vs-fraction-removed for top-k groups.
+    """
+
+    if not results:
+        return
+
+    k = int(k)
+    if k <= 0:
+        raise ValueError("k must be positive")
+
+    grid_size = int(grid_size)
+    if grid_size < 2:
+        raise ValueError("grid_size must be >= 2")
+
+    grid = np.linspace(0.0, 1.0, grid_size)
+
+    # Precompute curve for each model on a shared grid.
+    curves_by_model: dict[str, np.ndarray] = {}
+    for r in results:
+        model = r.get("model")
+        if model is None:
+            continue
+        frac, acc = _accuracy_rejection_curve(
+            r["entropy"], r["model_correct_alternatives"]
+        )
+        curves_by_model[model] = _interp_curve_to_grid(frac, acc, grid)
+
+    def _metric_value(r: dict, metric_key: str) -> float:
+        if metric_key == "ECE":
+            return float(r["ece_score"])
+        if metric_key == "Leaderboard":
+            return float(r["rank"])
+        # RewardBench category scores appear to be "higher is better"; convert to an error-like score.
+        if metric_key == "Factuality":
+            return 100.0 - float(r["factuality"])
+        if metric_key == "Math":
+            return 100.0 - float(r["math"])
+        if metric_key == "Safety":
+            return 100.0 - float(r["safety"])
+        if metric_key == "Focus":
+            return 100.0 - float(r["focus"])
+        if metric_key == "Ties":
+            return 100.0 - float(r["ties"])
+        raise KeyError(metric_key)
+
+    metrics = ["ECE", "Leaderboard", "Factuality", "Math", "Safety", "Focus", "Ties"]
+    eps = 1e-12
+
+    summary_rows = []
+    var_curves_top: dict[str, np.ndarray] = {}
+
+    for metric in metrics:
+        sortable = []
+        for r in results:
+            model = r.get("model")
+            if model not in curves_by_model:
+                continue
+            curve = curves_by_model[model]
+            if np.all(np.isnan(curve)):
+                continue
+            try:
+                val = _metric_value(r, metric)
+            except Exception:
+                continue
+            sortable.append((val, model))
+
+        if len(sortable) == 0:
+            continue
+
+        sortable.sort(key=lambda x: x[0])  # lower is better
+        k_eff = min(k, len(sortable))
+        top_models = [m for _, m in sortable[:k_eff]]
+        bottom_models = [m for _, m in sortable[-k_eff:]]
+
+        top_mat = np.vstack([curves_by_model[m] for m in top_models])
+        bottom_mat = np.vstack([curves_by_model[m] for m in bottom_models])
+
+        # Variance across models at each grid point.
+        # If k_eff == 1, variance is 0 (np.var handles this).
+        var_top = np.nanvar(top_mat, axis=0)
+        var_bottom = np.nanvar(bottom_mat, axis=0)
+        var_curves_top[metric] = var_top
+
+        mean_var_top = float(np.nanmean(var_top))
+        mean_var_bottom = float(np.nanmean(var_bottom))
+
+        mean_top = np.nanmean(top_mat, axis=0)
+        mean_bottom = np.nanmean(bottom_mat, axis=0)
+        separation = float(np.nanmean(np.abs(mean_top - mean_bottom)))
+
+        avg_within = 0.5 * (mean_var_top + mean_var_bottom)
+        quality = separation / (avg_within + eps)
+
+        summary_rows.append(
+            {
+                "metric": metric,
+                "k": k_eff,
+                "mean_within_var_topk": mean_var_top,
+                "mean_within_var_bottomk": mean_var_bottom,
+                "mean_abs_separation": separation,
+                "quality_ratio": quality,
+            }
+        )
+
+    if summary_rows:
+        dfq = pd.DataFrame(summary_rows).sort_values("quality_ratio", ascending=False)
+        dfq.to_csv(output_csv, index=False)
+        print(f"\nGrouping-quality summary written to {output_csv}")
+        print(dfq.to_string(index=False))
+
+    # Plot variance-vs-fraction-removed for top-k groups across metrics.
+    if var_curves_top:
+        plt.style.use("seaborn-v0_8-whitegrid")
+        fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
+        for metric in metrics:
+            if metric not in var_curves_top:
+                continue
+            ax.plot(grid, var_curves_top[metric], lw=2.0, label=metric)
+
+        ax.set_xlabel("Fraction removed (reject highest entropy first)")
+        ax.set_ylabel("Variance of accuracy on remaining set (top-k group)")
+        ax.set_title(f"Top-{k} group tightness by metric (lower = tighter)")
+        ax.set_xlim(0, 1)
+        ax.grid(True, alpha=0.35)
+        ax.legend(frameon=False, ncols=2)
+        fig.savefig(output_plot, dpi=200, bbox_inches="tight")
+        print(f"Variance plot written to {output_plot}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze average absolute logit difference for top reward models"
@@ -507,6 +1273,12 @@ def main():
         type=Path,
         default="cache_reward_bench",
         help="Cache directory for downloaded files",
+    )
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=10,
+        help="Number of top/bottom models to highlight in visualizations",
     )
     args = parser.parse_args()
 
@@ -635,7 +1407,7 @@ def main():
     print(f"RESULTS: Margin Metrics ({len(results)} models with logit scores)")
     print("=" * 90)
     print(
-        f"{'Rank':<5} {'Model':<50} {'Mean-Margin':<15} {'Margin-to-Mean':<15} {'ECE Score':<15} {'ECE Rank':<10}"
+        f"{'Rank':<5} {'Model':<50} {'Mean-Margin':<15} {'Margin-to-Mean':<15} {'ECE Score':<15} {'ECE Rank':<10} {'Accuracy':<10}"
     )
     print("-" * 90)
     ece_probs_chosen_over_rejected_sorted = sorted(
@@ -647,7 +1419,7 @@ def main():
     }
     for r in results:
         print(
-            f"{r['rank']:<5} {r['model']:<50} {r['mean_margin']:<15.4f} {r['margin_to_mean']:<15.4f} {r['ece_score']:<15.4f} {ece_ranks[r['model']]:<10}"
+            f"{r['rank']:<5} {r['model']:<50} {r['mean_margin']:<15.4f} {r['margin_to_mean']:<15.4f} {r['ece_score']:<15.4f} {ece_ranks[r['model']]:<10} {r['model_accuracy']:<10.4f}"
         )
 
     print("=" * 90)
@@ -657,10 +1429,34 @@ def main():
     visualize_correlation(correlations)
 
     # Visualize accuracy–rejection curve (reject highest entropy first), colored by ECE
-    visualize_accuracy_rejection_curve(results, k=20)
+    visualize_accuracy_rejection_curve(results, k=args.k)
 
     # Visualize accuracy–rejection curve colored by leaderboard rank
-    visualize_accuracy_rejection_curve_by_rank(results, k=20)
+    visualize_accuracy_rejection_curve_by_rank(results, k=args.k)
+
+    # Visualize accuracy–rejection curve colored by factuality
+    visualize_accuracy_rejection_curve_by_factuality(results, k=args.k)
+
+    # Visualize accuracy–rejection curve colored by math
+    visualize_accuracy_rejection_curve_by_math(results, k=args.k)
+
+    # Visualize accuracy–rejection curve colored by safety
+    visualize_accuracy_rejection_curve_by_safety(results, k=args.k)
+
+    # Visualize accuracy–rejection curve colored by focus
+    visualize_accuracy_rejection_curve_by_focus(results, k=args.k)
+
+    # Visualize accuracy–rejection curve colored by ties
+    visualize_accuracy_rejection_curve_by_ties(results, k=args.k)
+
+    # Quantify how well each metric groups accuracy–rejection curves
+    quantify_grouping_quality(
+        results,
+        k=args.k,
+        grid_size=101,
+        output_csv=f"accuracy_rejection_grouping_quality_k{args.k}.csv",
+        output_plot=f"accuracy_rejection_curve_group_variance_topk_k{args.k}.png",
+    )
 
     # Write results to csv
     df = pd.DataFrame(results)
