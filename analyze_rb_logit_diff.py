@@ -1115,15 +1115,20 @@ def quantify_grouping_quality(
     grid_size: int = 101,
     output_csv: str = "accuracy_rejection_grouping_quality.csv",
     output_plot: str = "accuracy_rejection_curve_group_variance_topk.png",
+    output_side_by_side_plot: str = "accuracy_rejection_curve_group_variance_and_separation_topk.png",
 ):
     """Quantify how well different metrics group accuracy–rejection curves.
 
     For each metric, forms top-k (best) and bottom-k (worst) groups, then computes:
       - within-group variance vs rejection fraction (and its mean over the grid)
-      - between-group separation (mean absolute difference between mean curves)
+      - between-group separation (AUC of |mean_top(p) - mean_bottom(p)| over p∈[0,1])
       - a simple quality ratio: separation / (avg within-var + eps)
 
-    Saves a CSV summary and a plot of variance-vs-fraction-removed for top-k groups.
+        Saves:
+            - a CSV summary
+            - a variance curve plot (top-k group)
+            - a separation curve plot (|mean_top(p) - mean_bottom(p)|)
+            - a side-by-side figure showing variance and separation
     """
 
     if not results:
@@ -1173,6 +1178,7 @@ def quantify_grouping_quality(
 
     summary_rows = []
     var_curves_top: dict[str, np.ndarray] = {}
+    sep_curves: dict[str, np.ndarray] = {}
 
     for metric in metrics:
         sortable = []
@@ -1211,7 +1217,10 @@ def quantify_grouping_quality(
 
         mean_top = np.nanmean(top_mat, axis=0)
         mean_bottom = np.nanmean(bottom_mat, axis=0)
-        separation = float(np.nanmean(np.abs(mean_top - mean_bottom)))
+        sep_curve = np.abs(mean_top - mean_bottom)
+        sep_curves[metric] = sep_curve
+        # Area between the two mean curves (absolute difference integrated over rejection fraction).
+        separation = float(np.trapezoid(sep_curve, grid))
 
         avg_within = 0.5 * (mean_var_top + mean_var_bottom)
         quality = separation / (avg_within + eps)
@@ -1222,7 +1231,7 @@ def quantify_grouping_quality(
                 "k": k_eff,
                 "mean_within_var_topk": mean_var_top,
                 "mean_within_var_bottomk": mean_var_bottom,
-                "mean_abs_separation": separation,
+                "auc_abs_diff_mean_curves": separation,
                 "quality_ratio": quality,
             }
         )
@@ -1232,24 +1241,144 @@ def quantify_grouping_quality(
         dfq.to_csv(output_csv, index=False)
         print(f"\nGrouping-quality summary written to {output_csv}")
         print(dfq.to_string(index=False))
+        print("Latex table format:")
+        print(dfq.to_latex(index=False, float_format="%.4f"))
 
     # Plot variance-vs-fraction-removed for top-k groups across metrics.
     if var_curves_top:
         plt.style.use("seaborn-v0_8-whitegrid")
-        fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(10.5, 6.2), constrained_layout=True)
+
+        ece_color = "#D1495B"  # standout (distinct from the blue family)
+        non_ece = [m for m in metrics if m != "ECE"]
+        blue_shades = plt.cm.Blues(np.linspace(0.25, 0.90, max(len(non_ece), 1)))
+        non_ece_colors = {m: blue_shades[i] for i, m in enumerate(non_ece)}
+
         for metric in metrics:
             if metric not in var_curves_top:
                 continue
-            ax.plot(grid, var_curves_top[metric], lw=2.0, label=metric)
+            is_ece = metric == "ECE"
+            ax.plot(
+                grid,
+                var_curves_top[metric],
+                lw=3.2 if is_ece else 2.2,
+                alpha=1.0 if is_ece else 0.9,
+                color=(ece_color if is_ece else non_ece_colors.get(metric, "#4C78A8")),
+                label=metric,
+            )
 
         ax.set_xlabel("Fraction removed (reject highest entropy first)")
-        ax.set_ylabel("Variance of accuracy on remaining set (top-k group)")
-        ax.set_title(f"Top-{k} group tightness by metric (lower = tighter)")
+        ax.set_ylabel("Within-group variance of accuracy (top-k)")
+        ax.set_title(f"Top-{k} curve tightness by metric")
         ax.set_xlim(0, 1)
-        ax.grid(True, alpha=0.35)
-        ax.legend(frameon=False, ncols=2)
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.grid(False, axis="x")
+        ax.legend(frameon=False, ncols=3, loc="upper left")
         fig.savefig(output_plot, dpi=200, bbox_inches="tight")
         print(f"Variance plot written to {output_plot}")
+
+    # Plot separation curve (pointwise gap between best and worst mean curves).
+    if sep_curves:
+        plt.style.use("seaborn-v0_8-whitegrid")
+        fig, ax = plt.subplots(figsize=(10.5, 6.2), constrained_layout=True)
+
+        ece_color = "#D1495B"
+        non_ece = [m for m in metrics if m != "ECE"]
+        blue_shades = plt.cm.Blues(np.linspace(0.25, 0.90, max(len(non_ece), 1)))
+        non_ece_colors = {m: blue_shades[i] for i, m in enumerate(non_ece)}
+
+        for metric in metrics:
+            if metric not in sep_curves:
+                continue
+            is_ece = metric == "ECE"
+            ax.plot(
+                grid,
+                sep_curves[metric],
+                lw=3.2 if is_ece else 2.2,
+                alpha=1.0 if is_ece else 0.9,
+                color=(ece_color if is_ece else non_ece_colors.get(metric, "#4C78A8")),
+                label=metric,
+            )
+
+        ax.set_xlabel("Fraction removed (reject highest entropy first)")
+        ax.set_ylabel("Pointwise separation  |Δ mean accuracy|")
+        ax.set_title(f"Top vs bottom separation by metric (k={k})")
+        ax.set_xlim(0, 1)
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.grid(False, axis="x")
+        ax.legend(frameon=False, ncols=3, loc="upper left")
+        separation_plot = output_plot.replace("variance", "separation")
+        fig.savefig(separation_plot, dpi=200, bbox_inches="tight")
+        print(f"Separation plot written to {separation_plot}")
+
+    # Side-by-side figure for quick comparison (variance vs separation).
+    if var_curves_top and sep_curves:
+        plt.style.use("seaborn-v0_8-whitegrid")
+        fig, (ax_var, ax_sep) = plt.subplots(
+            1, 2, figsize=(15.5, 6.0), constrained_layout=True
+        )
+
+        ece_color = "#D1495B"
+        non_ece = [m for m in metrics if m != "ECE"]
+        blue_shades = plt.cm.Blues(np.linspace(0.25, 0.90, max(len(non_ece), 1)))
+        non_ece_colors = {m: blue_shades[i] for i, m in enumerate(non_ece)}
+
+        for metric in metrics:
+            if metric in var_curves_top:
+                is_ece = metric == "ECE"
+                ax_var.plot(
+                    grid,
+                    var_curves_top[metric],
+                    lw=3.2 if is_ece else 2.2,
+                    alpha=1.0 if is_ece else 0.9,
+                    color=(
+                        ece_color if is_ece else non_ece_colors.get(metric, "#4C78A8")
+                    ),
+                    label=metric,
+                )
+            if metric in sep_curves:
+                is_ece = metric == "ECE"
+                ax_sep.plot(
+                    grid,
+                    sep_curves[metric],
+                    lw=3.2 if is_ece else 2.2,
+                    alpha=1.0 if is_ece else 0.9,
+                    color=(
+                        ece_color if is_ece else non_ece_colors.get(metric, "#4C78A8")
+                    ),
+                    label=metric,
+                )
+
+        ax_var.set_xlabel("Fraction removed")
+        ax_var.set_ylabel("Variance (top-k)")
+        ax_var.set_title("Tightness")
+        ax_var.set_xlim(0, 1)
+        ax_var.grid(True, axis="y", alpha=0.25)
+        ax_var.grid(False, axis="x")
+
+        ax_sep.set_xlabel("Fraction removed")
+        ax_sep.set_ylabel("|Δ mean|")
+        ax_sep.set_title("Separation")
+        ax_sep.set_xlim(0, 1)
+        ax_sep.grid(True, axis="y", alpha=0.25)
+        ax_sep.grid(False, axis="x")
+
+        # Shared legend below both plots for readability.
+        handles, labels = ax_sep.get_legend_handles_labels()
+        if handles:
+            # Reserve a bit more bottom space so the legend isn't squished.
+            fig.subplots_adjust(bottom=0.20)
+            fig.legend(
+                handles,
+                labels,
+                loc="lower center",
+                bbox_to_anchor=(0.5, -0.2),
+                ncols=4,
+                frameon=False,
+            )
+
+        fig.savefig(output_side_by_side_plot, dpi=200, bbox_inches="tight")
+        print(f"Side-by-side plot written to {output_side_by_side_plot}")
 
 
 def main():
@@ -1277,7 +1406,7 @@ def main():
     parser.add_argument(
         "--k",
         type=int,
-        default=10,
+        default=5,
         help="Number of top/bottom models to highlight in visualizations",
     )
     args = parser.parse_args()
@@ -1456,6 +1585,7 @@ def main():
         grid_size=101,
         output_csv=f"accuracy_rejection_grouping_quality_k{args.k}.csv",
         output_plot=f"accuracy_rejection_curve_group_variance_topk_k{args.k}.png",
+        output_side_by_side_plot=f"accuracy_rejection_curve_group_variance_and_separation_topk_k{args.k}.png",
     )
 
     # Write results to csv

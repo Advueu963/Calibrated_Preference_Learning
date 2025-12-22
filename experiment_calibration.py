@@ -1439,10 +1439,8 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = "political"
-    RANK_WEIGHTING = (
-        "most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
-    )
+    dataset_name = "movies"
+    RANK_WEIGHTING = "most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
     DISCREPANCY = "abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
     BIN_SPACING = "linear"  # Options: "linear", "log"
 
@@ -1476,7 +1474,7 @@ if __name__ == "__main__":
     res_tau_dist = []
 
     # ####### Ranking Predictions (make sure the models have well-defined probabilities) #######
-    possible_rankings = construct_possible_rankings(y.shape[1])
+    possible_rankings = np.unique(y, axis=0)  # construct_possible_rankings(y.shape[1])
     proportion_of_considered_rankings_in_ece = len(possible_rankings) / factorial(
         y.shape[1]
     )
@@ -1637,13 +1635,23 @@ if __name__ == "__main__":
         #     )
 
         ####### ECE Evaluation #######
-        distribution_pl = placket_luce_model.predict_ranking_distribution(X_test_tensor)
-        distribution_mallows = mallows_model_fold.predict_ranking_distribution(
-            X_test_tensor
+        if dataset_name == "movies":
+            restricted_rankings = [tuple(r) for r in possible_rankings]
+        else:
+            restricted_rankings = None
+        distribution_pl = placket_luce_model.predict_ranking_distribution(
+            X_test_tensor, restricted_rankings=restricted_rankings
         )
-        distribution_pref = preference_model.predict_ranking_distribution(X_test_tensor)
+        distribution_mallows = mallows_model_fold.predict_ranking_distribution(
+            X_test_tensor,
+            restricted_rankings=restricted_rankings,
+        )
+        distribution_pref = preference_model.predict_ranking_distribution(
+            X_test_tensor, restricted_rankings=restricted_rankings
+        )
         distribution_rpc_pl = placket_luce_model_baseline.predict_ranking_distribution(
-            X_test_tensor
+            X_test_tensor,
+            restricted_rankings=restricted_rankings,
         )
         distribution_rpc = {
             torch.tensor((i, j)): baseline_estimator_matrix[:, i - 1, j - 1]

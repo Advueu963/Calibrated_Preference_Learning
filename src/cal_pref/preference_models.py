@@ -48,10 +48,14 @@ class PreferenceModel(nn.Module):
     ):
         super(PreferenceModel, self).__init__()
         self.mlp = build_preference_mlp(input_dim, hidden_dims, output_dim)
-        if math.factorial(n_items) != output_dim:
-            self.unseen_weights = (constant_value * torch.ones(math.factorial(n_items) - output_dim)).float()
+        self.n_unseen = math.factorial(n_items) - output_dim
+        if self.n_unseen > 0:
+            # Single shared logit for every unseen ranking. Each unseen ranking then gets
+            # probability exp(unseen_logit) / (sum(exp(seen_logits)) + n_unseen*exp(unseen_logit)).
+            # Register as buffer so it moves with .to(device) / .cuda().
+            self.register_buffer("unseen_logit", torch.tensor(float(constant_value)))
         else:
-            self.unseen_weights = None
+            self.unseen_logit = None
         self.n_items = n_items
         self.rankings = unique_rankings
         self.idx_rankings = {
@@ -63,22 +67,56 @@ class PreferenceModel(nn.Module):
 
     def forward(self, x):
         x = self.mlp(x)
-        if self.unseen_weights is not None:
-            # print("UNSEEN WEIGHTS: ", self.unseen_weights)
-            x = torch.hstack(
-                (
-                    x,
-                    torch.repeat_interleave(
-                        self.unseen_weights.unsqueeze(0), x.shape[0], dim=0
-                    ),
-                )
-            )
+        # if self.unseen_weights is not None:
+        #     # print("UNSEEN WEIGHTS: ", self.unseen_weights)
+        #     x = torch.hstack(
+        #         (
+        #             x,
+        #             torch.repeat_interleave(
+        #                 self.unseen_weights.unsqueeze(0), x.shape[0], dim=0
+        #             ),
+        #         )
+        #     )
         # print(x)
         return x / self.temperature
 
+    def _probs_seen_and_unseen_each(self, logits: torch.Tensor):
+        """Return (probs_seen, p_unseen_each).
+
+        probs_seen has shape (batch, output_dim).
+        p_unseen_each has shape (batch, 1) and is the probability of any *one*
+        particular unseen ranking (uniform across all unseen rankings).
+        """
+        # Stable normalization.
+        log_z_seen = torch.logsumexp(
+            logits, dim=-1, keepdim=True
+        )  # log(sum(exp(seen_logits)))
+
+        if self.n_unseen > 0:
+            assert self.unseen_logit is not None
+            # Total unseen mass contributes n_unseen * exp(unseen_logit)
+            log_unseen_mass = self.unseen_logit + math.log(self.n_unseen)
+            log_denom = torch.logaddexp(log_z_seen, log_unseen_mass)
+            p_unseen_each = torch.exp(self.unseen_logit - log_denom)
+        else:
+            log_denom = log_z_seen
+            p_unseen_each = torch.zeros(
+                (logits.shape[0], 1), device=logits.device, dtype=logits.dtype
+            )
+
+        probs_seen = torch.exp(logits - log_denom)
+        return probs_seen, p_unseen_each
+
+    def calculate_probs_with_unseen(self, logits):
+        # Compute probabilities over seen rankings adjusted for unseen rankings.
+        probs_seen, _p_unseen_each = self._probs_seen_and_unseen_each(logits)
+        return probs_seen
+
     def predict_proba(self, x):
         logits = self.forward(x)
-        probs = nn.functional.softmax(logits, dim=-1)
+        # Compute Softmax probabilities adjusted for unseen rankings
+        probs = self.calculate_probs_with_unseen(logits)
+        # probs = nn.functional.softmax(logits, dim=-1)
         return probs
 
     def predict_proba_ranking(self, x, rank):
@@ -86,22 +124,29 @@ class PreferenceModel(nn.Module):
         return self.predict_proba_ranking_logits(logits, rank)
 
     def predict_proba_ranking_logits(self, logits, rank):
-        probs = nn.functional.softmax(logits, dim=-1)
+        probs, p_unseen_each = self._probs_seen_and_unseen_each(logits)
         if len(rank.shape) == 1:
             rank = rank.expand(logits.shape[0], -1)
-        idx_ranks = torch.tensor(
-            [
-                self.idx_rankings.get(tuple(r.tolist()), probs.shape[1] - 1)
-                for r in rank
-            ],
-            device=logits.device,
-        )
-        rank_probs = torch.gather(probs, 1, idx_ranks.unsqueeze(1)).squeeze(1)
-        return rank_probs
+        idx_list = []
+        seen_mask_list = []
+        for r in rank:
+            idx = self.idx_rankings.get(tuple(r.tolist()), -1)
+            seen_mask_list.append(idx != -1)
+            idx_list.append(idx if idx != -1 else 0)
 
-    def predict_ranking_distribution(self, x):
+        idx_ranks = torch.tensor(idx_list, device=logits.device, dtype=torch.long)
+        seen_mask = torch.tensor(seen_mask_list, device=logits.device, dtype=torch.bool)
+
+        gathered = torch.gather(probs, 1, idx_ranks.unsqueeze(1)).squeeze(1)
+        unseen_vals = p_unseen_each.squeeze(1)
+        return torch.where(seen_mask, gathered, unseen_vals)
+
+    def predict_ranking_distribution(self, x, restricted_rankings=None):
         logits = self.forward(x)
-        rankings = permutations(range(1, self.n_items + 1))
+        if restricted_rankings is None:
+            rankings = permutations(range(1, self.n_items + 1))
+        else:
+            rankings = restricted_rankings
         distribution = {}
         for rank in rankings:
             rank_tensor = (
@@ -163,9 +208,12 @@ class PlackettLuceModelWeights(nn.Module):
         probs = (weights / cum_sums).prod(dim=-1)
         return probs
 
-    def predict_ranking_distribution(self, x):
+    def predict_ranking_distribution(self, x, restricted_rankings=None):
         logits = self.forward(x).clamp(min=1e-6)
-        rankings = permutations(range(1, self.n_items + 1))
+        if restricted_rankings is None:
+            rankings = permutations(range(1, self.n_items + 1))
+        else:
+            rankings = restricted_rankings
         distribution = {}
         for rank in rankings:
             rank_tensor = (
@@ -232,9 +280,12 @@ class PlackettLuceModel(nn.Module):
             raise ValueError("NaN values in probabilities.")
         return probs
 
-    def predict_ranking_distribution(self, x):
+    def predict_ranking_distribution(self, x, restricted_rankings=None):
         weights = self.forward(x)
-        rankings = permutations(range(1, self.n_items + 1))
+        if restricted_rankings is None:
+            rankings = permutations(range(1, self.n_items + 1))
+        else:
+            rankings = restricted_rankings
         distribution = {}
         for rank in rankings:
             rank_tensor = (
@@ -302,8 +353,11 @@ class MallowsModel(nn.Module):
     def predict(self, x):
         return self.reference_ranking.expand(x.shape[0], -1).long()
 
-    def predict_ranking_distribution(self, x):
-        rankings = permutations(range(1, self.n_items + 1))
+    def predict_ranking_distribution(self, x, restricted_rankings=None):
+        if restricted_rankings is None:
+            rankings = permutations(range(1, self.n_items + 1))
+        else:
+            rankings = restricted_rankings
         distribution = {}
         for rank in rankings:
             rank_tensor = (
