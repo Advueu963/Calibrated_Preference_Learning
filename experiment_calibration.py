@@ -111,20 +111,14 @@ def get_preference_models(
         placket_luce_model_brier.parameters(), lr=0.001
     )
 
-    # Mallows Model for reference
-    unique_rankings = np.unique(y, axis=0)
-    most_occurrent_ranking = unique_rankings[
-        np.argmax([np.sum((y == ranking).all(axis=1)) for ranking in unique_rankings])
-    ]
-    print("Most occurrent ranking in training set: ", most_occurrent_ranking)
-    mallows_model = MallowsModel.fit_from_data(
-        torch.tensor(y, dtype=torch.long), distance_metric="kendall"
-    )
+    # Mallows Model
+    mallows_model = None
 
     # RPC Baseline with Calibrated Decision Tree
     estimator = DecisionTreeClassifier()
     # estimator = CalibratedClassifierCV(estimator=estimator, cv=5, method="sigmoid")
-    baseline_estimator = PairwiseLabelRanker(estimator=estimator, n_jobs=-1)
+    baseline_estimator = PairwiseLabelRanker(estimator=estimator, n_jobs=
+                                             int(os.environ["OMP_NUM_THREADS"]))
 
     models_optimizer_criterion = {
         "PreferenceModel": (preference_model, criterion, optimizer),
@@ -140,10 +134,10 @@ def get_preference_models(
     return models_optimizer_criterion
 
 
-def train_placket_luce_model(
-    placket_luce_model,
-    placket_criterion,
-    placket_optimizer,
+def train_plackett_luce_model(
+    plackett_luce_model,
+    plackett_criterion,
+    plackett_optimizer,
     X_train_tensor,
     y_train_tensor,
     num_epochs,
@@ -169,15 +163,15 @@ def train_placket_luce_model(
             X_batch = X_train_tensor[batch_indices]
             y_batch = y_train_tensor[batch_indices]
 
-            placket_luce_model.train()
-            placket_optimizer.zero_grad()
-            logits = placket_luce_model(X_batch)
+            plackett_luce_model.train()
+            plackett_optimizer.zero_grad()
+            logits = plackett_luce_model(X_batch)
 
-            loss = placket_criterion(y_batch, logits, placket_luce_model)
+            loss = plackett_criterion(y_batch, logits, plackett_luce_model)
             # MSE between predicted distribution and empirical distribution
 
             loss.backward()
-            placket_optimizer.step()
+            plackett_optimizer.step()
 
 
 def train_preference_model(
@@ -1439,7 +1433,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = args.dataset_name  
+    dataset_name = args.dataset  
     RANK_WEIGHTING = args.rank_weighting #"most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
     DISCREPANCY = args.discrepancy #"abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
     BIN_SPACING = args.bin_spacing # "linear"  # Options: "linear", "log"
@@ -1474,7 +1468,10 @@ if __name__ == "__main__":
     res_tau_dist = []
 
     # ####### Ranking Predictions (make sure the models have well-defined probabilities) #######
-    possible_rankings = np.unique(y, axis=0)  # construct_possible_rankings(y.shape[1])
+    if dataset_name not in ["movies","letter","libras","vowel","pendigit","yeast"]: # For very large ranking spaces, we only consider the observed rankings in the test set
+        possible_rankings = construct_possible_rankings(y.shape[1])
+    else:
+        possible_rankings = np.unique(y, axis=0)
     proportion_of_considered_rankings_in_ece = len(possible_rankings) / factorial(
         y.shape[1]
     )
@@ -1493,11 +1490,8 @@ if __name__ == "__main__":
         preference_model, preference_criterion, preference_optimizer = (
             models_optimizer_criterion["PreferenceModel"]
         )
-        placket_luce_model, placket_criterion, placket_optimizer = (
+        plackett_luce_model, plackett_criterion, plackett_optimizer = (
             models_optimizer_criterion["PlackettLuceModel"]
-        )
-        placket_luce_model_brier, placket_brier_criterion, placket_brier_optimizer = (
-            models_optimizer_criterion["PlackettLuceModelBrier"]
         )
         _mallows_model_entry, _, _ = models_optimizer_criterion["MallowsModel"]
         baseline_estimator, _, _ = models_optimizer_criterion["RPC_PL"]
@@ -1514,15 +1508,17 @@ if __name__ == "__main__":
         y_test_tensor = torch.tensor(y_test, dtype=torch.long)
 
         #### Training Loop ####
-        train_placket_luce_model(
-            placket_luce_model=placket_luce_model,
-            placket_criterion=placket_criterion,
-            placket_optimizer=placket_optimizer,
+        print("Training Plackett Luce Model...")
+        train_plackett_luce_model(
+            plackett_luce_model=plackett_luce_model,
+            plackett_criterion=plackett_criterion,
+            plackett_optimizer=plackett_optimizer,
             X_train_tensor=X_train_tensor,
             y_train_tensor=y_train_tensor,
             num_epochs=num_epochs,
             batch_size=batch_size,
         )
+        print("Training Preference Model...")
         train_preference_model(
             preference_model=preference_model,
             criterion=preference_criterion,
@@ -1532,16 +1528,7 @@ if __name__ == "__main__":
             num_epochs=num_epochs,
             batch_size=batch_size,
         )
-        train_placket_luce_model_brier(
-            placket_luce_model_brier=placket_luce_model_brier,
-            placket_brier_criterion=placket_brier_criterion,
-            placket_brier_optimizer=placket_brier_optimizer,
-            X_train_tensor=X_train_tensor,
-            y_train_tensor=y_train_tensor,
-            num_epochs=num_epochs,
-            batch_size=batch_size,
-        )
-
+        print("Training Plackett Luce Model via RPC...")
         placket_luce_model_baseline, baseline_estimator_matrix = (
             train_placket_luce_rpc_model(
                 baseline_estimator,
@@ -1552,11 +1539,13 @@ if __name__ == "__main__":
                 method_rpc_pl="vectorized",
             )
         )
-
+        print("Fitting Mallows Model...")
         mallows_model_fold = MallowsModel.fit_from_data(
             y_train_tensor, distance_metric="kendall"
         )
         #### Calibration Loop via Temperature Scaling ####
+        
+        print("Calibrating Preference Model...")
         preference_model = calibrate_preference_model(
             preference_model,
             preference_criterion,
@@ -1564,20 +1553,21 @@ if __name__ == "__main__":
             y_cal_tensor,
         )
         #### Evaluate Models ####
+        print("Evaluating Models...")
         results = evaluate_kendal_models(
             models=[
-                placket_luce_model,
+                plackett_luce_model,
                 mallows_model_fold,
                 preference_model,
                 placket_luce_model_baseline,
                 baseline_estimator,
             ],
-            criterions=[placket_criterion, None, preference_criterion, None, None],
+            criterions=[plackett_criterion, None, preference_criterion, None, None],
             model_names=[
                 "PlackettLuce",
                 "MallowsModel",
                 "PreferenceModel",
-                "PlackettLuceRPC",
+               "PlackettLuceRPC",
                 "RPC",
             ],
             evaluate_functions=[
@@ -1639,7 +1629,7 @@ if __name__ == "__main__":
             restricted_rankings = [tuple(r) for r in possible_rankings]
         else:
             restricted_rankings = None
-        distribution_pl = placket_luce_model.predict_ranking_distribution(
+        distribution_pl = plackett_luce_model.predict_ranking_distribution(
             X_test_tensor, restricted_rankings=restricted_rankings
         )
         distribution_mallows = mallows_model_fold.predict_ranking_distribution(

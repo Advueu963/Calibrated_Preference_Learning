@@ -656,7 +656,17 @@ def calculate_sub_k_full_rank_calibration(
     sub_k_full_rank_ece = {}
 
     for item_set in possible_items_sets:
-        possible_sub_rankings = list(permutations(item_set, k))
+        if y_true.shape[1] >= 8:
+            # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
+            unique_sub_k_rankings = set()
+            for true_ranking in y_true:
+                sub_k_ranking = tuple(
+                    [item for item in true_ranking.tolist() if item in item_set]
+                )
+                unique_sub_k_rankings.add(sub_k_ranking)
+            possible_sub_rankings = list(unique_sub_k_rankings)
+        else:
+            possible_sub_rankings = list(permutations(item_set, k))
         rankings_to_idx = {
             ranking: idx for idx, ranking in enumerate(possible_sub_rankings)
         }
@@ -741,15 +751,21 @@ def calculate_top_k_full_rank_calibration(
     """
     from itertools import permutations, combinations
 
-    possible_top_rankings = list(permutations(items, k))
-
-    top_k_full_rank_ece = {}
+    if y_true.shape[1] >= 8:
+        # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
+        unique_top_k_rankings = set()
+        for true_ranking in y_true:
+            top_k_ranking = tuple(true_ranking.tolist()[:k])
+            unique_top_k_rankings.add(top_k_ranking)
+        possible_top_k_rankings = list(unique_top_k_rankings)
+    else:
+        possible_top_k_rankings = list(permutations(items, k))
 
     rankings_to_idx = {
-        ranking: idx for idx, ranking in enumerate(possible_top_rankings)
+        ranking: idx for idx, ranking in enumerate(possible_top_k_rankings)
     }
     y_true_top_k, y_prob_top_k = construct_top_k_full_rank_tensors(
-        possible_top_rankings, y_true, y_pred_proba, rankings_to_idx
+        possible_top_k_rankings, y_true, y_pred_proba, rankings_to_idx
     )
 
     if mode == "binning":
@@ -838,7 +854,21 @@ def calculate_sub_k_calibration(
     """
     from itertools import combinations, permutations
 
-    possible_sub_rankings = list(permutations(items, k))
+    if y_true.shape[1] >= 8:
+        # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
+        unique_sub_rankings = set()
+        for true_ranking in y_true:
+            for item_combination in combinations(items, k):
+                sub_ranking = tuple(
+                    item
+                    for item in true_ranking.tolist()
+                    if item in item_combination
+                )
+                if len(sub_ranking) == k:
+                    unique_sub_rankings.add(sub_ranking)
+        possible_sub_rankings = list(unique_sub_rankings)
+    else:
+        possible_sub_rankings = list(permutations(items, k))
     sub_rankings_ece = []
     for sub_ranking in possible_sub_rankings:
         # Construct the binary classification tensors
@@ -964,8 +994,15 @@ def calculate_top_k_calibration(
         dict: The ECE per top-k ranking and the total ECE
     """
     from itertools import combinations, permutations
-
-    possible_top_k_rankings = list(permutations(items, k))
+    if y_true.shape[1] >= 8:
+        # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
+        unique_top_k_rankings = set()
+        for true_ranking in y_true:
+            top_k_ranking = tuple(true_ranking.tolist()[:k])
+            unique_top_k_rankings.add(top_k_ranking)
+        possible_top_k_rankings = list(unique_top_k_rankings)
+    else:
+        possible_top_k_rankings = list(permutations(items, k))
     top_k_rankings_ece = []
     for top_k_ranking in possible_top_k_rankings:
         # Construct the binary classification tensors

@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
+from tqdm import tqdm
 
 
 def build_preference_mlp(input_dim: int, hidden_dims: list[int], output_dim: int):
@@ -385,7 +386,7 @@ class MallowsModel(nn.Module):
         theta = 1.0
         prev_log_likelihood = None
 
-        for _ in range(max_iters):
+        for _ in tqdm(range(max_iters), desc="Fitting Mallows Model"):
             distances = _distances_to_modal(modal_ranking, rankings_np, distance_metric)
             sum_distances = distances.sum()
             theta = _estimate_theta(
