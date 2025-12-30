@@ -54,7 +54,7 @@ parser.add_argument(
     "--rank_weighting",
     type=str,
     default="uniform",
-    help='Rank weighting scheme for ECE calculation. Options are "uniform", "prevalence", and "pred_mass".',
+    help='Rank weighting scheme for ECE calculation. Options are "uniform", "prevalence", "pred_mass", and "most_confident".',
 )
 parser.add_argument(
     "--discrepancy",
@@ -1439,10 +1439,10 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = "movies"
-    RANK_WEIGHTING = "most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
-    DISCREPANCY = "abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
-    BIN_SPACING = "linear"  # Options: "linear", "log"
+    dataset_name = args.dataset_name  
+    RANK_WEIGHTING = args.rank_weighting #"most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
+    DISCREPANCY = args.discrepancy #"abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
+    BIN_SPACING = args.bin_spacing # "linear"  # Options: "linear", "log"
 
     if dataset_name.startswith("synthetic"):
         X, y, y_true_probs = synthetic_data(
@@ -1635,7 +1635,7 @@ if __name__ == "__main__":
         #     )
 
         ####### ECE Evaluation #######
-        if dataset_name == "movies":
+        if dataset_name in ["movies","letter","libras","vowel","pendigit","yeast"]: # For very large ranking spaces, we only consider the observed rankings in the test set
             restricted_rankings = [tuple(r) for r in possible_rankings]
         else:
             restricted_rankings = None
