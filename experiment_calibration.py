@@ -276,22 +276,8 @@ def train_placket_luce_rpc_model(
         tau_score(y_train, baseline_estimator.predict(X_train)),
     )
     baseline_estimator_matrix = baseline_estimator.get_pairwise_matrix(X_test)
-    true_comparion_matrix = np.zeros((n_items, n_items))
-    for i in range(n_items):
-        for j in range(n_items):
-            if i != j:
-                true_comparion_matrix[i, j] = np.mean(
-                    [
-                        (
-                            1
-                            if ranking.tolist().index(i + 1)
-                            < ranking.tolist().index(j + 1)
-                            else 0
-                        )
-                        for ranking in y_train
-                    ]
-                )
 
+    
     match method_rpc_pl:
         case "vectorized":
             placket_luce_weights = from_bradley_terry_to_placket_luce_vectorized(
@@ -796,20 +782,7 @@ def evaluate_calibration_rankwise_sub_k_top_k(
 
         for k in possible_k_top_k:
             if model_name == "RPC":
-                if k > 2 or k < 2:
-                    ece_top_k = {"total_ece": -1}
-                elif k == 2 and y_test_tensor.shape[1] == 3:
-                    ece_top_k = {"total_ece": -1}
-                else:
-                    ece_top_k = calculate_top_k_calibration(
-                        items=items,
-                        y_true=y_test_tensor,
-                        y_pred_proba=distribution,
-                        k=k,
-                        rank_weighting=rank_weighting,
-                        discrepancy=discrepancy,
-                        bin_spacing=bin_spacing,
-                    )
+                ece_top_k = {"total_ece": -1}
             else:
                 ece_top_k = calculate_top_k_calibration(
                     items=items,
@@ -884,20 +857,7 @@ def evaluate_calibration_full_rank_sub_k_top_k(
 
         for k in possible_k_top_k:
             if model_name == "RPC":
-                if k > 2:
-                    ece_top_k = {"total_ece": -1}
-                elif k == 2 and y_test_tensor.shape[1] == 3:
-                    ece_top_k = {"total_ece": -1}
-                else:
-                    ece_top_k = calculate_top_k_full_rank_calibration(
-                        items=items,
-                        y_true=y_test_tensor,
-                        y_pred_proba=distribution,
-                        k=k,
-                        mode="kernel",
-                        h=h,
-                        p_norm=p_norm,
-                    )
+                ece_top_k = {"total_ece": -1}
             else:
                 ece_top_k = calculate_top_k_full_rank_calibration(
                     items=items,
@@ -1540,9 +1500,9 @@ if __name__ == "__main__":
             )
         )
         print("Fitting Mallows Model...")
-        mallows_model_fold = MallowsModel.fit_from_data(
-            y_train_tensor, distance_metric="kendall"
-        )
+        # mallows_model_fold = MallowsModel.fit_from_data(
+        #     y_train_tensor, distance_metric="kendall"
+        # )
         #### Calibration Loop via Temperature Scaling ####
         
         print("Calibrating Preference Model...")
@@ -1557,22 +1517,26 @@ if __name__ == "__main__":
         results = evaluate_kendal_models(
             models=[
                 plackett_luce_model,
-                mallows_model_fold,
+                #mallows_model_fold,
                 preference_model,
                 placket_luce_model_baseline,
                 baseline_estimator,
             ],
-            criterions=[plackett_criterion, None, preference_criterion, None, None],
+            criterions=[plackett_criterion, 
+                        #None, 
+                        preference_criterion, 
+                        None, 
+                        None],
             model_names=[
                 "PlackettLuce",
-                "MallowsModel",
+                #"MallowsModel",
                 "PreferenceModel",
-               "PlackettLuceRPC",
+                "PlackettLuceRPC",
                 "RPC",
             ],
             evaluate_functions=[
                 evaluate_placket_luce_model,
-                evaluate_mallows_model,
+                #evaluate_mallows_model,
                 evaluate_preference_model,
                 evaluate_placket_luce_rpc_model,
                 evaluate_calibrated_rpc_model,
@@ -1590,7 +1554,7 @@ if __name__ == "__main__":
         res_tau_dist.append(
             (
                 results["PlackettLuce"][0],
-                results["MallowsModel"][0],
+                #results["MallowsModel"][0],
                 results["PreferenceModel"][0],
                 results["PlackettLuceRPC"][0],
             )
@@ -1632,10 +1596,10 @@ if __name__ == "__main__":
         distribution_pl = plackett_luce_model.predict_ranking_distribution(
             X_test_tensor, restricted_rankings=restricted_rankings
         )
-        distribution_mallows = mallows_model_fold.predict_ranking_distribution(
-            X_test_tensor,
-            restricted_rankings=restricted_rankings,
-        )
+        # distribution_mallows = mallows_model_fold.predict_ranking_distribution(
+        #     X_test_tensor,
+        #     restricted_rankings=restricted_rankings,
+        # )
         distribution_pref = preference_model.predict_ranking_distribution(
             X_test_tensor, restricted_rankings=restricted_rankings
         )
@@ -1656,14 +1620,14 @@ if __name__ == "__main__":
         evaluate_calibration_rankwise_sub_k_top_k(
             distributions=[
                 distribution_pl,
-                distribution_mallows,
+                #distribution_mallows,
                 distribution_pref,
                 distribution_rpc_pl,
                 distribution_rpc,
             ],
             model_names=[
                 "PlackettLuce",
-                "MallowsModel",
+                #"MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
@@ -1681,14 +1645,14 @@ if __name__ == "__main__":
         evaluate_calibration_full_rank_sub_k_top_k(
             distributions=[
                 distribution_pl,
-                distribution_mallows,
+                #distribution_mallows,
                 distribution_pref,
                 distribution_rpc_pl,
                 distribution_rpc,
             ],
             model_names=[
                 "PlackettLuce",
-                "MallowsModel",
+                #"MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
@@ -1719,7 +1683,7 @@ if __name__ == "__main__":
     #### Prepare Data for Visualization ####
     model_names = [
         "PlackettLuce",
-        "MallowsModel",
+        #"MallowsModel",
         "PreferenceModel",
         "PlackettLuceRPC",
         "RPC",

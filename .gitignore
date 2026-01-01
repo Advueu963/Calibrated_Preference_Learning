@@ -17,3 +17,8 @@ wheels/
 # Pdf Files
 Calibratoin_Label_Ranking/
 cache_reward_bench/
+
+# Cluster files
+*.cmd
+*.out
+*.sh
