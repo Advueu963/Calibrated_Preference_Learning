@@ -118,8 +118,12 @@ def get_preference_models(
 
     # RPC Baseline with Calibrated Decision Tree
     estimator = DecisionTreeClassifier()
-    estimator = CalibratedClassifierCV(estimator=estimator, cv=5, method="sigmoid", n_jobs=1)
-    baseline_estimator = PairwiseLabelRanker(estimator=estimator, n_jobs=int(os.environ.get("OMP_NUM_THREADS", 1)))
+    estimator = CalibratedClassifierCV(
+        estimator=estimator, cv=2, method="sigmoid", n_jobs=1
+    )
+    baseline_estimator = PairwiseLabelRanker(
+        estimator=estimator, n_jobs=int(os.environ.get("OMP_NUM_THREADS", 1))
+    )
 
     models_optimizer_criterion = {
         "PreferenceModel": (preference_model, criterion, optimizer),
@@ -172,9 +176,9 @@ def train_plackett_luce_model(
             # MSE between predicted distribution and empirical distribution
 
             loss.backward()
-            
+
             plackett_optimizer.step()
-            #print(f"Epoch {epoch}, Batch {i//batch_size}, Loss: {loss.item()}")
+            # print(f"Epoch {epoch}, Batch {i//batch_size}, Loss: {loss.item()}")
 
 
 def train_preference_model(
@@ -817,6 +821,7 @@ def evaluate_calibration_full_rank_sub_k_top_k(
     rankwise_full_rank_top_k_eces,
     h=1,
     p_norm=1,
+    rank_weighting="uniform",
 ):
     """Evaluate full-rank calibration for sub-k and top-k.
 
@@ -847,6 +852,7 @@ def evaluate_calibration_full_rank_sub_k_top_k(
                         mode="kernel",
                         h=h,
                         p_norm=p_norm,
+                        rank_weighting=rank_weighting,
                     )
             else:
                 # For all other models we just simply calculate the sub-k calibration
@@ -858,6 +864,7 @@ def evaluate_calibration_full_rank_sub_k_top_k(
                     mode="kernel",
                     h=h,
                     p_norm=p_norm,
+                    rank_weighting=rank_weighting,
                 )
             rankwise_full_rank_sub_k_eces[k][-1].append(ece_sub_k["total_ece"])
 
@@ -873,6 +880,7 @@ def evaluate_calibration_full_rank_sub_k_top_k(
                     mode="kernel",
                     h=h,
                     p_norm=p_norm,
+                    rank_weighting=rank_weighting,
                 )
             rankwise_full_rank_top_k_eces[k][-1].append(ece_top_k["total_ece"])
     for k in possible_k_sub_k:
@@ -1141,7 +1149,7 @@ def visualize_ece_results(
     )
     fig.tight_layout()
     fig.savefig(
-        f"{save_folder}subk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank.png"
+        f"{save_folder}subk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank_{rank_weighting}_{discrepancy}_{bin_spacing}.png"
     )
 
     print("Visualizing Top-k Rank-wise ECE...")
@@ -1245,7 +1253,7 @@ def visualize_ece_results(
     )
     fig.tight_layout()
     fig.savefig(
-        f"{save_folder}topk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank.png"
+        f"{save_folder}topk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank_{rank_weighting}_{discrepancy}_{bin_spacing}.png"
     )
 
     print("Visualizing Sub-k Rankwise ECE vs k with Error Bars...")
@@ -1380,12 +1388,13 @@ def calibrate_preference_model(
             device=logits.device,
         ).long()
         loss = preference_criterion(scaled_logits, y_batch_idx)
+        print("Calibration loss: ", loss.item())
         loss.backward()
         return loss
 
     optimizer.step(eval)
     print(f"Optimal temperature: {temperature.item():.4f}")
-    preference_model.temperature = temperature
+    preference_model.temperature = temperature.item()
     return preference_model
 
 
@@ -1464,7 +1473,7 @@ if __name__ == "__main__":
         )
         #### Get Models, Optimizers and Criterions ####
         models_optimizer_criterion = get_preference_models(
-            input_dim, n_items, hidden_dims, output_dim, y, constant_value=0.0
+            input_dim, n_items, hidden_dims, output_dim, y, constant_value=-20.0
         )
         preference_model, preference_criterion, preference_optimizer = (
             models_optimizer_criterion["PreferenceModel"]
@@ -1581,34 +1590,6 @@ if __name__ == "__main__":
             )
         )
 
-        #### Print the Weights of PL vs BT-RPC ####
-        # if dataset_name.startswith("synthetic"):
-        #     evaluate_placket_luce_rpc_vs_placket_luce(
-        #         placket_luce_model=placket_luce_model,
-        #         placket_luce_model_baseline=placket_luce_model_baseline,
-        #         X_test_tensor=X_test_tensor,
-        #         possible_rankings=possible_rankings,
-        #         y_true_probs=y_true_probs,
-        #         baseline_estimator_matrix=baseline_estimator.get_pairwise_matrix(
-        #             X_test
-        #         ),
-        #         placket_luce_weights_vectorized=from_bradley_terry_to_placket_luce_vectorized(
-        #             np.random.default_rng(42),
-        #             baseline_estimator.get_pairwise_matrix(X_test),
-        #             n_iterations=N_ITERATIONS,
-        #         ),
-        #         placket_luce_weights_simple=from_bradley_terry_to_placket_luce_simple(
-        #             np.random.default_rng(42),
-        #             baseline_estimator.get_pairwise_matrix(X_test),
-        #             n_iterations=N_ITERATIONS,
-        #         ),
-        #         placket_luce_weights_map=from_bradley_terry_to_placket_luce_map(
-        #             np.random.default_rng(42),
-        #             baseline_estimator.get_pairwise_matrix(X_test),
-        #             n_iterations=N_ITERATIONS,
-        #         ),
-        #     )
-
         ####### ECE Evaluation #######
         if dataset_name in [
             "movies",
@@ -1635,6 +1616,8 @@ if __name__ == "__main__":
             X_test_tensor,
             restricted_rankings=restricted_rankings,
         )
+        # Create the distribution of rpc. We only have access to P(i beats j).
+
         distribution_rpc = {
             (i, j): baseline_estimator_matrix[:, i - 1, j - 1]
             for i in range(1, n_items + 1)
@@ -1692,6 +1675,7 @@ if __name__ == "__main__":
             rankwise_full_rank_top_k_eces=rankwise_full_rank_top_k_eces,
             h=1,
             p_norm=1,
+            rank_weighting=RANK_WEIGHTING,
         )
 
         print(f"Completed fold {fold + 1}/{n_folds}\n")

@@ -246,6 +246,147 @@ def kendal_distance(y_true, y_pred, normalize=True):
         return discordant_pairs
 
 
+#######################################
+############# ECE helper ##############
+#######################################
+
+
+def _coerce_ranking_probabilities(
+    y_pred_proba,
+    *,
+    n_samples: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[list[tuple[int, ...]], torch.Tensor]:
+    """Normalize predicted ranking probabilities into a (ranking_list, prob_matrix) pair.
+
+    Supported inputs:
+    Ranking keys are interpreted as *orderings* (best->worst item IDs).
+    Keys may be full rankings of length n_items (e.g. (2,1,3)) or partial
+    orderings (e.g. (2,1) meaning 2 > 1).
+
+    Supported inputs:
+    - dict: ordering_tuple -> length-n_samples probs (list/np/torch)
+    - list[dict]: length n_samples, each dict maps ordering_tuple -> scalar prob for that sample
+    """
+
+    def _as_prob_vec(v) -> torch.Tensor:
+        t = torch.as_tensor(v, device=device, dtype=dtype)
+        if t.ndim == 0:
+            t = t.expand(n_samples)
+        else:
+            t = t.reshape(-1)
+        if t.numel() != n_samples:
+            raise ValueError(
+                f"Probability vector must have length n_samples={n_samples}, got {t.numel()}"
+            )
+        return t
+
+    # Case 1: per-sample list of dicts.
+    if (
+        isinstance(y_pred_proba, list)
+        and (len(y_pred_proba) == n_samples)
+        and all(isinstance(d, dict) for d in y_pred_proba)
+    ):
+        ranking_set: set[tuple[int, ...]] = set()
+        for d in y_pred_proba:
+            for r in d.keys():
+                ranking_set.add(tuple(r))
+        ranking_list = list(ranking_set)
+        R = len(ranking_list)
+        if R == 0:
+            return [], torch.zeros((0, n_samples), device=device, dtype=dtype)
+        idx = {r: i for i, r in enumerate(ranking_list)}
+        prob_matrix = torch.zeros((R, n_samples), device=device, dtype=dtype)
+        for s, d in enumerate(y_pred_proba):
+            for r, p in d.items():
+                prob_matrix[idx[tuple(r)], s] = float(p)
+        return ranking_list, prob_matrix
+
+    # Case 2: dict-of-vectors.
+    if isinstance(y_pred_proba, dict):
+        ranking_list = [tuple(r) for r in y_pred_proba.keys()]
+        if len(ranking_list) == 0:
+            return [], torch.zeros((0, n_samples), device=device, dtype=dtype)
+        prob_matrix = torch.stack(
+            [_as_prob_vec(y_pred_proba[r]) for r in y_pred_proba], dim=0
+        )
+        return ranking_list, prob_matrix
+
+    # Last resort: try to coerce into dict-of-vectors.
+    try:
+        y_pred_proba = dict(y_pred_proba)
+    except Exception as e:
+        raise TypeError(
+            "y_pred_proba must be a dict ranking->probs or a list of per-sample dicts"
+        ) from e
+    return _coerce_ranking_probabilities(
+        y_pred_proba, n_samples=n_samples, device=device, dtype=dtype
+    )
+
+
+def filter_rankings_by_occurrence(y_true, y_pred_proba, full_order_true):
+    """
+    Filter out rankings from y_pred_proba and y_true which do not occur frequently enough in y_true.
+    Parameters
+    ----------
+    y_true : torch.Tensor
+        True rankings of shape (n_samples, n_items).
+    y_pred_proba : dict {ranking_tuple: torch.Tensor}
+        Predicted probabilities for each ranking.
+    full_order_true : torch.Tensor
+        Full orderings (best->worst) of shape (n_samples, n_items).
+
+    Returns:
+    -------
+    y_true_filtered : torch.Tensor
+        Filtered true rankings.
+    y_pred_proba_filtered : dict {ranking_tuple: torch.Tensor}
+        Filtered predicted probabilities for each ranking.
+    """
+    # Consider only those rankings which together account for 95% of the ranking occurences
+    ranking_occurences = {}
+    for order in full_order_true:
+        ranking_tuple = tuple(order.tolist())
+        if ranking_tuple not in ranking_occurences:
+            ranking_occurences[ranking_tuple] = 0
+        ranking_occurences[ranking_tuple] += 1
+    total_occurences = sum(ranking_occurences.values())
+    sorted_rankings = sorted(
+        ranking_occurences.items(), key=lambda x: x[1], reverse=True
+    )
+    cum_occurences = 0
+    selected_rankings = []
+    for ranking, count in sorted_rankings:
+        selected_rankings.append(ranking)
+        cum_occurences += count
+        if cum_occurences / total_occurences >= 0.95:
+            break
+    #print("Selected", round(len(selected_rankings) / len(ranking_occurences), 3)*100, "% of rankings covering (goal was 95%).")
+
+    mask = torch.tensor(
+        [tuple(order.tolist()) in selected_rankings for order in full_order_true]
+    )
+    # Filter out y_true and y_pred_proba to only include selected rankings
+    # This will also remove some samples from y_true
+    y_pred_proba = {
+        ranking: prob[mask]
+        for ranking, prob in y_pred_proba.items()
+        if _check_ranking_in_selected_rankings(ranking, selected_rankings)
+    }
+    y_true = y_true[mask]
+    # print(
+    #     "Filtered y_true to only include selected rankings. New shape:",
+    #     y_true.shape,
+    # )
+    # print(
+    #     "Filtered y_pred_proba to only include selected rankings. New size:",
+    #     len(list(y_pred_proba.values())[0]),
+    # )
+
+    return y_true, y_pred_proba
+
+
 ###################################
 ## Core ECE Computation Function #
 #################################
@@ -598,80 +739,6 @@ def strong_calibration_error_dirichlet_kernel(
 #########################################
 
 
-def _coerce_ranking_probabilities(
-    y_pred_proba,
-    *,
-    n_samples: int,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> tuple[list[tuple[int, ...]], torch.Tensor]:
-    """Normalize predicted ranking probabilities into a (ranking_list, prob_matrix) pair.
-
-    Supported inputs:
-    Ranking keys are interpreted as *orderings* (best->worst item IDs).
-    Keys may be full rankings of length n_items (e.g. (2,1,3)) or partial
-    orderings (e.g. (2,1) meaning 2 > 1).
-
-    Supported inputs:
-    - dict: ordering_tuple -> length-n_samples probs (list/np/torch)
-    - list[dict]: length n_samples, each dict maps ordering_tuple -> scalar prob for that sample
-    """
-
-    def _as_prob_vec(v) -> torch.Tensor:
-        t = torch.as_tensor(v, device=device, dtype=dtype)
-        if t.ndim == 0:
-            t = t.expand(n_samples)
-        else:
-            t = t.reshape(-1)
-        if t.numel() != n_samples:
-            raise ValueError(
-                f"Probability vector must have length n_samples={n_samples}, got {t.numel()}"
-            )
-        return t
-
-    # Case 1: per-sample list of dicts.
-    if (
-        isinstance(y_pred_proba, list)
-        and (len(y_pred_proba) == n_samples)
-        and all(isinstance(d, dict) for d in y_pred_proba)
-    ):
-        ranking_set: set[tuple[int, ...]] = set()
-        for d in y_pred_proba:
-            for r in d.keys():
-                ranking_set.add(tuple(r))
-        ranking_list = list(ranking_set)
-        R = len(ranking_list)
-        if R == 0:
-            return [], torch.zeros((0, n_samples), device=device, dtype=dtype)
-        idx = {r: i for i, r in enumerate(ranking_list)}
-        prob_matrix = torch.zeros((R, n_samples), device=device, dtype=dtype)
-        for s, d in enumerate(y_pred_proba):
-            for r, p in d.items():
-                prob_matrix[idx[tuple(r)], s] = float(p)
-        return ranking_list, prob_matrix
-
-    # Case 2: dict-of-vectors.
-    if isinstance(y_pred_proba, dict):
-        ranking_list = [tuple(r) for r in y_pred_proba.keys()]
-        if len(ranking_list) == 0:
-            return [], torch.zeros((0, n_samples), device=device, dtype=dtype)
-        prob_matrix = torch.stack(
-            [_as_prob_vec(y_pred_proba[r]) for r in y_pred_proba], dim=0
-        )
-        return ranking_list, prob_matrix
-
-    # Last resort: try to coerce into dict-of-vectors.
-    try:
-        y_pred_proba = dict(y_pred_proba)
-    except Exception as e:
-        raise TypeError(
-            "y_pred_proba must be a dict ranking->probs or a list of per-sample dicts"
-        ) from e
-    return _coerce_ranking_probabilities(
-        y_pred_proba, n_samples=n_samples, device=device, dtype=dtype
-    )
-
-
 def construct_sub_k_full_rank_tensors(
     possible_sub_k_rankings: list[list[int]],
     y_true: torch.Tensor,
@@ -825,6 +892,7 @@ def calculate_sub_k_full_rank_calibration(
     mode="binning",
     h=1,
     p_norm=1.0,
+    rank_weighting: str = None,
 ):
     """This method calucates the sub_k calibration as definined in our work.
     For this it constructs all rankings of `items` which are of length `k` and then aggregates `y_pred_proba` accordingly.
@@ -847,48 +915,9 @@ def calculate_sub_k_full_rank_calibration(
     full_order_true = torch.argsort(y_true, dim=1) + 1
 
     if rank_weighting == "95_prob_mass":
-        # Consider only those rankings which together account for 95% of the ranking occurences
-        ranking_occurences = {}
-        for order in full_order_true:
-            ranking_tuple = tuple(order.tolist())
-            if ranking_tuple not in ranking_occurences:
-                ranking_occurences[ranking_tuple] = 0
-            ranking_occurences[ranking_tuple] += 1
-        total_occurences = sum(ranking_occurences.values())
-        sorted_rankings = sorted(
-            ranking_occurences.items(), key=lambda x: x[1], reverse=True
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true
         )
-        cum_occurences = 0
-        selected_rankings = []
-        for ranking, count in sorted_rankings:
-            selected_rankings.append(ranking)
-            cum_occurences += count
-            if cum_occurences / total_occurences >= 0.95:
-                break
-        print(
-            "Selected", len(selected_rankings), "rankings covering 95% of occurences."
-        )
-
-        mask = torch.tensor(
-            [tuple(order.tolist()) in selected_rankings for order in full_order_true]
-        )
-        # Filter out y_true and y_pred_proba to only include selected rankings
-        # This will also remove some samples from y_true
-        y_pred_proba = {
-            ranking: prob[mask]
-            for ranking, prob in y_pred_proba.items()
-            if ranking in selected_rankings
-        }
-        y_true = y_true[mask]
-        print(
-            "Filtered y_true to only include selected rankings. New shape:",
-            y_true.shape,
-        )
-        print(
-            "Filtered y_pred_proba to only include selected rankings. New size:",
-            len(list(y_pred_proba.values())[0]),
-        )
-
 
     possible_items_sets = list(combinations(items, k))
 
@@ -900,7 +929,9 @@ def calculate_sub_k_full_rank_calibration(
             unique_sub_k_rankings = set()
             for true_ranking in full_order_true:
                 # NOTE: y_true is ranks-per-item, so convert to full order first.
-                sub_k_ranking = tuple([item for item in true_ranking if item in item_set])
+                sub_k_ranking = tuple(
+                    [item for item in true_ranking if item in item_set]
+                )
                 unique_sub_k_rankings.add(sub_k_ranking)
             possible_sub_rankings = list(unique_sub_k_rankings)
         else:
@@ -1053,6 +1084,7 @@ def calculate_top_k_full_rank_calibration(
     mode="binning",
     h=1,
     p_norm=1.0,
+    rank_weighting: str = None,
 ):
     """This method calucates the top_k full-rank calibration as definined in our work.
     For this it constructs all top-k rankings of `items` which are of length `k` and then aggregates `y_pred_proba` accordingly.
@@ -1069,53 +1101,14 @@ def calculate_top_k_full_rank_calibration(
         dict: The ECE per top-k ranking and the total ECE.
     """
     from itertools import permutations, combinations
-    
+
     # y_true is ranks-per-item; derive full best->worst orderings when needed.
     full_order_true = torch.argsort(y_true, dim=1) + 1
 
     if rank_weighting == "95_prob_mass":
-        # Consider only those rankings which together account for 95% of the ranking occurences
-        ranking_occurences = {}
-        for order in full_order_true:
-            ranking_tuple = tuple(order.tolist())
-            if ranking_tuple not in ranking_occurences:
-                ranking_occurences[ranking_tuple] = 0
-            ranking_occurences[ranking_tuple] += 1
-        total_occurences = sum(ranking_occurences.values())
-        sorted_rankings = sorted(
-            ranking_occurences.items(), key=lambda x: x[1], reverse=True
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true
         )
-        cum_occurences = 0
-        selected_rankings = []
-        for ranking, count in sorted_rankings:
-            selected_rankings.append(ranking)
-            cum_occurences += count
-            if cum_occurences / total_occurences >= 0.95:
-                break
-        print(
-            "Selected", len(selected_rankings), "rankings covering 95% of occurences."
-        )
-
-        mask = torch.tensor(
-            [tuple(order.tolist()) in selected_rankings for order in full_order_true]
-        )
-        # Filter out y_true and y_pred_proba to only include selected rankings
-        # This will also remove some samples from y_true
-        y_pred_proba = {
-            ranking: prob[mask]
-            for ranking, prob in y_pred_proba.items()
-            if ranking in selected_rankings
-        }
-        y_true = y_true[mask]
-        print(
-            "Filtered y_true to only include selected rankings. New shape:",
-            y_true.shape,
-        )
-        print(
-            "Filtered y_pred_proba to only include selected rankings. New size:",
-            len(list(y_pred_proba.values())[0]),
-        )
-
 
     if y_true.shape[1] >= 8:
         # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
@@ -1281,6 +1274,28 @@ def construct_sub_k_tensors(
     return y_true_sub, y_prob_sub
 
 
+def _check_ranking_in_selected_rankings(
+    ranking: tuple[int], selected_rankings: list[tuple[int]]
+) -> bool:
+    """This method checks whether the ranking is contained in the selected_rankings.
+    There exist the special case of RPC which does not output full rankings but only partial rankings.
+    In this case, we consider a ranking to be contained in the selected_rankings if the selected ranking is consistent with the full ranking.
+    Args:
+        ranking (tuple[int]): The ranking to check
+        selected_rankings (list[tuple[int]]): The selected rankings to check against
+
+    Returns:
+        bool: True if the ranking is contained in the selected_rankings, False otherwise
+    """
+    if len(ranking) != len(selected_rankings[0]):
+        # Partial ranking case
+        for selected_ranking in selected_rankings:
+            if check_sub_k_in_ranking(list(ranking), list(selected_ranking)):
+                return True
+        return False
+    return ranking in selected_rankings
+
+
 def calculate_sub_k_calibration(
     items: list[int],
     y_true: torch.Tensor,
@@ -1309,47 +1324,10 @@ def calculate_sub_k_calibration(
     full_order_true = torch.argsort(y_true, dim=1) + 1
 
     if rank_weighting == "95_prob_mass":
-        # Consider only those rankings which together account for 95% of the ranking occurences
-        ranking_occurences = {}
-        for order in full_order_true:
-            ranking_tuple = tuple(order.tolist())
-            if ranking_tuple not in ranking_occurences:
-                ranking_occurences[ranking_tuple] = 0
-            ranking_occurences[ranking_tuple] += 1
-        total_occurences = sum(ranking_occurences.values())
-        sorted_rankings = sorted(
-            ranking_occurences.items(), key=lambda x: x[1], reverse=True
-        )
-        cum_occurences = 0
-        selected_rankings = []
-        for ranking, count in sorted_rankings:
-            selected_rankings.append(ranking)
-            cum_occurences += count
-            if cum_occurences / total_occurences >= 0.95:
-                break
-        print(
-            "Selected", len(selected_rankings), "rankings covering 95% of occurences."
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true
         )
 
-        mask = torch.tensor(
-            [tuple(order.tolist()) in selected_rankings for order in full_order_true]
-        )
-        # Filter out y_true and y_pred_proba to only include selected rankings
-        # This will also remove some samples from y_true
-        y_pred_proba = {
-            ranking: prob[mask]
-            for ranking, prob in y_pred_proba.items()
-            if ranking in selected_rankings
-        }
-        y_true = y_true[mask]
-        print(
-            "Filtered y_true to only include selected rankings. New shape:",
-            y_true.shape,
-        )
-        print(
-            "Filtered y_pred_proba to only include selected rankings. New size:",
-            len(list(y_pred_proba.values())[0]),
-        )
     if y_true.shape[1] >= 8:
         # We restrict the permutations to only those which are present in y_true
         unique_sub_rankings = set()
@@ -1575,46 +1553,8 @@ def calculate_top_k_calibration(
     full_order_true = torch.argsort(y_true, dim=1) + 1
 
     if rank_weighting == "95_prob_mass":
-        # Consider only those rankings which together account for 95% of the ranking occurences
-        ranking_occurences = {}
-        for order in full_order_true:
-            ranking_tuple = tuple(order.tolist())
-            if ranking_tuple not in ranking_occurences:
-                ranking_occurences[ranking_tuple] = 0
-            ranking_occurences[ranking_tuple] += 1
-        total_occurences = sum(ranking_occurences.values())
-        sorted_rankings = sorted(
-            ranking_occurences.items(), key=lambda x: x[1], reverse=True
-        )
-        cum_occurences = 0
-        selected_rankings = []
-        for ranking, count in sorted_rankings:
-            selected_rankings.append(ranking)
-            cum_occurences += count
-            if cum_occurences / total_occurences >= 0.95:
-                break
-        print(
-            "Selected", len(selected_rankings), "rankings covering 95% of occurences."
-        )
-
-        mask = torch.tensor(
-            [tuple(order.tolist()) in selected_rankings for order in full_order_true]
-        )
-        # Filter out y_true and y_pred_proba to only include selected rankings
-        # This will also remove some samples from y_true
-        y_pred_proba = {
-            ranking: prob[mask]
-            for ranking, prob in y_pred_proba.items()
-            if ranking in selected_rankings
-        }
-        y_true = y_true[mask]
-        print(
-            "Filtered y_true to only include selected rankings. New shape:",
-            y_true.shape,
-        )
-        print(
-            "Filtered y_pred_proba to only include selected rankings. New size:",
-            len(list(y_pred_proba.values())[0]),
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true
         )
 
     if y_true.shape[1] >= 8:
