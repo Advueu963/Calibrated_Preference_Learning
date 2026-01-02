@@ -1410,7 +1410,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = args.dataset
+    dataset_name = "yeast" # args.dataset
     RANK_WEIGHTING = (
         args.rank_weighting
     )  # "95_prob_mass"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
@@ -1630,30 +1630,30 @@ if __name__ == "__main__":
             reversed_rank = tuple(reversed(rank))
             distribution_rpc[reversed_rank] = 1.0 - prob
         print("Evaluating Rank-wise Sub-k and Top-k ECE...")
-        evaluate_calibration_rankwise_sub_k_top_k(
-            distributions=[
-                distribution_pl,
-                # distribution_mallows,
-                distribution_pref,
-                distribution_rpc_pl,
-                distribution_rpc,
-            ],
-            model_names=[
-                "PlackettLuce",
-                # "MallowsModel",
-                "PreferenceModel",
-                "PlackettLuceRPC",
-                "RPC",
-            ],
-            y_test_tensor=y_test_tensor,
-            possible_k_sub_k=POSSIBLE_K_SUB_K,
-            possible_k_top_k=POSSIBLE_K_TOP_K,
-            rankwise_sub_k_eces=rankwise_sub_k_eces,
-            rankwise_top_k_eces=rankwise_top_k_eces,
-            rank_weighting=RANK_WEIGHTING,
-            discrepancy=DISCREPANCY,
-            bin_spacing=BIN_SPACING,
-        )
+        # evaluate_calibration_rankwise_sub_k_top_k(
+        #     distributions=[
+        #         distribution_pl,
+        #         # distribution_mallows,
+        #         distribution_pref,
+        #         distribution_rpc_pl,
+        #         distribution_rpc,
+        #     ],
+        #     model_names=[
+        #         "PlackettLuce",
+        #         # "MallowsModel",
+        #         "PreferenceModel",
+        #         "PlackettLuceRPC",
+        #         "RPC",
+        #     ],
+        #     y_test_tensor=y_test_tensor,
+        #     possible_k_sub_k=POSSIBLE_K_SUB_K,
+        #     possible_k_top_k=POSSIBLE_K_TOP_K,
+        #     rankwise_sub_k_eces=rankwise_sub_k_eces,
+        #     rankwise_top_k_eces=rankwise_top_k_eces,
+        #     rank_weighting=RANK_WEIGHTING,
+        #     discrepancy=DISCREPANCY,
+        #     bin_spacing=BIN_SPACING,
+        # )
         print("Evaluating Full-Rank Sub-k and Top-k ECE...")
         evaluate_calibration_full_rank_sub_k_top_k(
             distributions=[

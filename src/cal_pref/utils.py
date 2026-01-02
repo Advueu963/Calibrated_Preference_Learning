@@ -918,19 +918,20 @@ def calculate_sub_k_full_rank_calibration(
         y_true, y_pred_proba = filter_rankings_by_occurrence(
             y_true, y_pred_proba, full_order_true
         )
-
+    
     possible_items_sets = list(combinations(items, k))
 
     sub_k_full_rank_ece = {}
 
-    for item_set in possible_items_sets:
+    for i in tqdm(range(len(possible_items_sets)), desc="Sub-k Full-Rank ECE"):
+        item_set = possible_items_sets[i]
         if y_true.shape[1] >= 8:
             # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
             unique_sub_k_rankings = set()
             for true_ranking in full_order_true:
                 # NOTE: y_true is ranks-per-item, so convert to full order first.
                 sub_k_ranking = tuple(
-                    [item for item in true_ranking if item in item_set]
+                    [int(item) for item in true_ranking if item in item_set]
                 )
                 unique_sub_k_rankings.add(sub_k_ranking)
             possible_sub_rankings = list(unique_sub_k_rankings)

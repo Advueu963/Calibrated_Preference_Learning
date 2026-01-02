@@ -1473,11 +1473,12 @@ def main():
                 f"  {rank:2}. {model_name}: No score data available (likely generative model)"
             )
             continue
-        # if model_name == "nicolinho/QRM-Gemma-2-27B":
-        #     print(
-        #         f"  {rank:2}. {model_name}: Skipping due to known score data issues"
-        #     )
-        #     continue
+        # Remove models which are not trained based on Bradley-Terry
+        if "QRM" in model_name:
+            print(
+                f"  {rank:2}. {model_name}: Skipping due to known score data issues"
+            )
+            continue
 
         scores_data = load_scores(file_path, args.cache_dir)
 
