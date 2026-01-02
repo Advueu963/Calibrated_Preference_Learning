@@ -843,6 +843,53 @@ def calculate_sub_k_full_rank_calibration(
     """
     from itertools import permutations, combinations
 
+    # y_true is ranks-per-item; derive full best->worst orderings when needed.
+    full_order_true = torch.argsort(y_true, dim=1) + 1
+
+    if rank_weighting == "95_prob_mass":
+        # Consider only those rankings which together account for 95% of the ranking occurences
+        ranking_occurences = {}
+        for order in full_order_true:
+            ranking_tuple = tuple(order.tolist())
+            if ranking_tuple not in ranking_occurences:
+                ranking_occurences[ranking_tuple] = 0
+            ranking_occurences[ranking_tuple] += 1
+        total_occurences = sum(ranking_occurences.values())
+        sorted_rankings = sorted(
+            ranking_occurences.items(), key=lambda x: x[1], reverse=True
+        )
+        cum_occurences = 0
+        selected_rankings = []
+        for ranking, count in sorted_rankings:
+            selected_rankings.append(ranking)
+            cum_occurences += count
+            if cum_occurences / total_occurences >= 0.95:
+                break
+        print(
+            "Selected", len(selected_rankings), "rankings covering 95% of occurences."
+        )
+
+        mask = torch.tensor(
+            [tuple(order.tolist()) in selected_rankings for order in full_order_true]
+        )
+        # Filter out y_true and y_pred_proba to only include selected rankings
+        # This will also remove some samples from y_true
+        y_pred_proba = {
+            ranking: prob[mask]
+            for ranking, prob in y_pred_proba.items()
+            if ranking in selected_rankings
+        }
+        y_true = y_true[mask]
+        print(
+            "Filtered y_true to only include selected rankings. New shape:",
+            y_true.shape,
+        )
+        print(
+            "Filtered y_pred_proba to only include selected rankings. New size:",
+            len(list(y_pred_proba.values())[0]),
+        )
+
+
     possible_items_sets = list(combinations(items, k))
 
     sub_k_full_rank_ece = {}
@@ -851,10 +898,9 @@ def calculate_sub_k_full_rank_calibration(
         if y_true.shape[1] >= 8:
             # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
             unique_sub_k_rankings = set()
-            for true_ranking in y_true:
+            for true_ranking in full_order_true:
                 # NOTE: y_true is ranks-per-item, so convert to full order first.
-                full_order = (torch.argsort(true_ranking, dim=0) + 1).tolist()
-                sub_k_ranking = tuple([item for item in full_order if item in item_set])
+                sub_k_ranking = tuple([item for item in true_ranking if item in item_set])
                 unique_sub_k_rankings.add(sub_k_ranking)
             possible_sub_rankings = list(unique_sub_k_rankings)
         else:
@@ -1023,12 +1069,58 @@ def calculate_top_k_full_rank_calibration(
         dict: The ECE per top-k ranking and the total ECE.
     """
     from itertools import permutations, combinations
+    
+    # y_true is ranks-per-item; derive full best->worst orderings when needed.
+    full_order_true = torch.argsort(y_true, dim=1) + 1
+
+    if rank_weighting == "95_prob_mass":
+        # Consider only those rankings which together account for 95% of the ranking occurences
+        ranking_occurences = {}
+        for order in full_order_true:
+            ranking_tuple = tuple(order.tolist())
+            if ranking_tuple not in ranking_occurences:
+                ranking_occurences[ranking_tuple] = 0
+            ranking_occurences[ranking_tuple] += 1
+        total_occurences = sum(ranking_occurences.values())
+        sorted_rankings = sorted(
+            ranking_occurences.items(), key=lambda x: x[1], reverse=True
+        )
+        cum_occurences = 0
+        selected_rankings = []
+        for ranking, count in sorted_rankings:
+            selected_rankings.append(ranking)
+            cum_occurences += count
+            if cum_occurences / total_occurences >= 0.95:
+                break
+        print(
+            "Selected", len(selected_rankings), "rankings covering 95% of occurences."
+        )
+
+        mask = torch.tensor(
+            [tuple(order.tolist()) in selected_rankings for order in full_order_true]
+        )
+        # Filter out y_true and y_pred_proba to only include selected rankings
+        # This will also remove some samples from y_true
+        y_pred_proba = {
+            ranking: prob[mask]
+            for ranking, prob in y_pred_proba.items()
+            if ranking in selected_rankings
+        }
+        y_true = y_true[mask]
+        print(
+            "Filtered y_true to only include selected rankings. New shape:",
+            y_true.shape,
+        )
+        print(
+            "Filtered y_pred_proba to only include selected rankings. New size:",
+            len(list(y_pred_proba.values())[0]),
+        )
+
 
     if y_true.shape[1] >= 8:
         # This would be too computationally expensive. We restrict the permutations to only those which are present in y_true
         unique_top_k_rankings = set()
         # NOTE: y_true is ranks-per-item, so convert to full order first.
-        full_order_true = torch.argsort(y_true, dim=1) + 1
         for i in range(full_order_true.shape[0]):
             top_k_ranking = tuple(full_order_true[i, :k].tolist())
             unique_top_k_rankings.add(top_k_ranking)

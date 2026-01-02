@@ -118,8 +118,8 @@ def get_preference_models(
 
     # RPC Baseline with Calibrated Decision Tree
     estimator = DecisionTreeClassifier()
-    # estimator = CalibratedClassifierCV(estimator=estimator, cv=5, method="sigmoid")
-    baseline_estimator = PairwiseLabelRanker(estimator=estimator, n_jobs=-1)
+    estimator = CalibratedClassifierCV(estimator=estimator, cv=5, method="sigmoid", n_jobs=1)
+    baseline_estimator = PairwiseLabelRanker(estimator=estimator, n_jobs=int(os.environ.get("OMP_NUM_THREADS", 1)))
 
     models_optimizer_criterion = {
         "PreferenceModel": (preference_model, criterion, optimizer),
@@ -1399,10 +1399,10 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = "movies"  # args.dataset
+    dataset_name = args.dataset
     RANK_WEIGHTING = (
-        "uniform" #args.rank_weighting
-    )  # "most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
+        args.rank_weighting
+    )  # "95_prob_mass"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
     DISCREPANCY = (
         args.discrepancy
     )  # "abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
