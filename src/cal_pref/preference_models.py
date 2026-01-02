@@ -6,6 +6,35 @@ import numpy as np
 from tqdm import tqdm
 
 
+def _order_to_ranks_tensor(order: torch.Tensor, n_items: int) -> torch.Tensor:
+    """Convert a best->worst item ordering into ranks-per-item.
+
+    order: (..., n_items) with entries in {1..n_items}.
+    returns ranks: (..., n_items) where ranks[..., j] is rank of item (j+1).
+    """
+    if order.dim() == 1:
+        order = order.unsqueeze(0)
+    order = order.to(dtype=torch.long)
+    ranks = torch.empty_like(order)
+    ranks.scatter_(
+        1,
+        order - 1,
+        torch.arange(1, n_items + 1, device=order.device).unsqueeze(0).expand_as(order),
+    )
+    return ranks
+
+
+def _ranks_to_order_tuple(ranks: tuple[int, ...]) -> tuple[int, ...]:
+    """Convert ranks-per-item (tuple) to a best->worst order tuple."""
+    # ranks[j] is rank of item (j+1). Smaller rank = better.
+    # argsort gives item indices best->worst.
+    import numpy as _np
+
+    ranks_arr = _np.asarray(ranks)
+    order = _np.argsort(ranks_arr) + 1
+    return tuple(int(x) for x in order.tolist())
+
+
 def build_preference_mlp(input_dim: int, hidden_dims: list[int], output_dim: int):
     layers: list[nn.Module] = []
     in_dim = input_dim
@@ -30,12 +59,17 @@ def build_plackett_luce_mlp(input_dim: int, hidden_dims: list[int], n_items: int
 
 
 class PreferenceModel(nn.Module):
-    """Probabilistic Preference Model using training each possible ranking as a class.
+    """Probabilistic Preference Model using each ranking as a class.
+
+    Conventions used in this repo:
+    - Training labels (`y_true`) are ranks-per-item (inverse permutation):
+        `y[s, j]` is the rank (1=best) of item (j+1).
+    - `.predict(...)` returns ranks-per-item.
+    - Predicted ranking distributions are dicts keyed by orderings (best->worst
+        tuples of item IDs), via `.predict_ranking_distribution(...)`.
+
     This model uses a multi-layer perceptron (MLP) to predict the logits for each
     possible ranking of items. Each unique ranking is treated as a separate class.
-    The model can handle unseen rankings by assigning them a uniform low probability.
-    During inference, the model outputs the probabilities for each ranking using
-    the softmax function.
     """
 
     def __init__(
@@ -108,21 +142,33 @@ class PreferenceModel(nn.Module):
         probs_seen = torch.exp(logits - log_denom)
         return probs_seen, p_unseen_each
 
-    def calculate_probs_with_unseen(self, logits):
+    def calculate_probs_with_unseen(self, logits, with_unseen=False):
         # Compute probabilities over seen rankings adjusted for unseen rankings.
         probs_seen, _p_unseen_each = self._probs_seen_and_unseen_each(logits)
+        if with_unseen:
+            return probs_seen, _p_unseen_each
         return probs_seen
 
-    def predict_proba(self, x):
+    def predict_proba(self, x, with_unseen=False):
         logits = self.forward(x)
         # Compute Softmax probabilities adjusted for unseen rankings
-        probs = self.calculate_probs_with_unseen(logits)
+        probs = self.calculate_probs_with_unseen(logits, with_unseen=with_unseen)
         # probs = nn.functional.softmax(logits, dim=-1)
         return probs
 
-    def predict_proba_ranking(self, x, rank):
+    def predict_proba_ranking(self, x, ranking):
+        """Return P(ordering | x) for each sample.
+
+        `ranking` is a best->worst order tuple/tensor of item IDs in {1..n_items}.
+        """
         logits = self.forward(x)
-        return self.predict_proba_ranking_logits(logits, rank)
+        ranking = torch.as_tensor(ranking, device=logits.device)
+        if ranking.dim() == 1:
+            ranking = ranking.unsqueeze(0)
+        if ranking.shape[0] == 1 and logits.shape[0] > 1:
+            ranking = ranking.expand(logits.shape[0], -1)
+        ranks = _order_to_ranks_tensor(ranking, self.n_items)
+        return self.predict_proba_ranking_logits(logits, ranks)
 
     def predict_proba_ranking_logits(self, logits, rank):
         probs, p_unseen_each = self._probs_seen_and_unseen_each(logits)
@@ -145,18 +191,28 @@ class PreferenceModel(nn.Module):
     def predict_ranking_distribution(self, x, restricted_rankings=None):
         logits = self.forward(x)
         if restricted_rankings is None:
-            rankings = permutations(range(1, self.n_items + 1))
+            rankings = list(permutations(range(1, self.n_items + 1)))
         else:
             rankings = restricted_rankings
         distribution = {}
-        for rank in rankings:
+
+        # We expose distributions keyed by *orderings* (best->worst item IDs).
+        # Internally, this model's classes are stored as ranks-per-item.
+        probs_seen, probs_unseen = self.predict_proba(x, with_unseen=True)
+        for i in tqdm(range(len(rankings)), desc="Predicting ranking distribution PM"):
+            order = tuple(rankings[i])
             rank_tensor = (
-                torch.tensor(rank, device=logits.device)
+                torch.tensor(order, device=logits.device)
                 .unsqueeze(0)
                 .expand(x.shape[0], -1)
             )
-            probs = self.predict_proba_ranking_logits(logits, rank_tensor)
-            distribution[rank] = probs.detach()
+            ranks_tensor = _order_to_ranks_tensor(rank_tensor, self.n_items)
+            idx = self.idx_rankings.get(tuple(ranks_tensor[0].tolist()), -1)
+            if idx != -1:
+                prob = probs_seen[:, idx]
+            else:
+                prob = probs_unseen.squeeze(1)
+            distribution[order] = prob.detach()
         return distribution
 
     def predict(self, x):
@@ -186,8 +242,18 @@ class PlackettLuceModelWeights(nn.Module):
         return self.weights
 
     def predict(self, x):
-        ranking = torch.argsort(self.weights, dim=-1, descending=True) + 1
-        return ranking
+        # Return ranks-per-item (inverse permutation): y[i] is the rank of item (i+1).
+        order = torch.argsort(self.weights, dim=-1, descending=True) + 1
+        n_items = order.shape[-1]
+        ranks = torch.empty_like(order)
+        ranks.scatter_(
+            1,
+            order - 1,
+            torch.arange(1, n_items + 1, device=order.device)
+            .unsqueeze(0)
+            .expand_as(order),
+        )
+        return ranks
 
     def predict_proba(self, x):
         cumulative_sums = torch.cumsum(
@@ -199,36 +265,64 @@ class PlackettLuceModelWeights(nn.Module):
         return probs
 
     def predict_proba_ranking_logits(self, logits, rank):
-        if len(rank.shape) == 1:
-            rank = rank.expand(logits.shape[0], -1)
-        idx_rank_sort = torch.argsort(rank, dim=-1, descending=True)
-        weights = torch.gather(
-            logits, 1, idx_rank_sort
-        )  # the exps that the highest rank (1) comes last
-        cum_sums = torch.cumsum(weights, dim=-1)
-        probs = (weights / cum_sums).prod(dim=-1)
-        return probs
+        # `rank` is ranks-per-item (inverse permutation). Convert to an ordering.
+        log_p = self.log_proba_ranking_logits(logits, rank)
+        return torch.exp(log_p)
+
+    def log_proba_ranking_logits(self, weights: torch.Tensor, rank: torch.Tensor):
+        """Return log P(rank | weights) where `rank` is ranks-per-item."""
+        if rank.dim() == 1:
+            rank = rank.unsqueeze(0).expand(weights.shape[0], -1)
+        rank = rank.to(dtype=torch.long)
+
+        # ranks-per-item -> order best->worst (item IDs in {1..n}).
+        order = torch.argsort(rank, dim=-1) + 1
+        weights_ranked = torch.gather(weights, 1, order - 1)
+
+        remaining_sums = torch.flip(
+            torch.cumsum(torch.flip(weights_ranked, dims=[-1]), dim=-1), dims=[-1]
+        )
+
+        eps = torch.finfo(weights.dtype).tiny
+        log_term = torch.log(weights_ranked.clamp_min(eps)) - torch.log(
+            remaining_sums.clamp_min(eps)
+        )
+        return log_term.sum(dim=-1)
 
     def predict_ranking_distribution(self, x, restricted_rankings=None):
         logits = self.forward(x).clamp(min=1e-6)
         if restricted_rankings is None:
-            rankings = permutations(range(1, self.n_items + 1))
+            rankings = list(permutations(range(1, self.n_items + 1)))
         else:
             rankings = restricted_rankings
         distribution = {}
-        for rank in rankings:
-            rank_tensor = (
-                torch.tensor(rank, device=logits.device)
+        for i in tqdm(
+            range(len(rankings)), desc="Predicting ranking distribution PLRPC"
+        ):
+            order = tuple(rankings[i])
+            order_tensor = (
+                torch.tensor(order, device=logits.device)
                 .unsqueeze(0)
                 .expand(x.shape[0], -1)
             )
-            probs = self.predict_proba_ranking_logits(logits, rank_tensor)
-            distribution[rank] = probs.detach()
+            ranks_tensor = _order_to_ranks_tensor(order_tensor, self.n_items)
+            probs = self.predict_proba_ranking_logits(logits, ranks_tensor)
+            distribution[order] = probs.detach()
         return distribution
 
-    def predict_proba_ranking(self, x, rank):
+    def predict_proba_ranking(self, x, ranking):
+        """Return P(ordering | weights) for each sample.
+
+        `ranking` is a best->worst order tuple/tensor of item IDs.
+        """
         logits = self.forward(x)
-        return self.predict_proba_ranking_logits(logits, rank)
+        ranking = torch.as_tensor(ranking, device=logits.device)
+        if ranking.dim() == 1:
+            ranking = ranking.unsqueeze(0)
+        if ranking.shape[0] == 1 and logits.shape[0] > 1:
+            ranking = ranking.expand(logits.shape[0], -1)
+        ranks = _order_to_ranks_tensor(ranking, self.n_items)
+        return self.predict_proba_ranking_logits(logits, ranks)
 
 
 class PlackettLuceModel(nn.Module):
@@ -242,13 +336,22 @@ class PlackettLuceModel(nn.Module):
         x = self.mlp(x)
         x = x - x.max(dim=-1, keepdim=True).values  # Improve numerical stability
         x = nn.functional.softmax(x, dim=-1)
-        return x.clamp_min(1e-9)
+        return x
 
     def predict(self, x):
+        # Return ranks-per-item (inverse permutation): y[i] is the rank of item (i+1).
         weights = self.forward(x)
-        # exp_logits = torch.exp(logits)
-        ranking = torch.argsort(weights, dim=-1, descending=True) + 1
-        return ranking
+        order = torch.argsort(weights, dim=-1, descending=True)
+        n_items = order.shape[-1]
+        ranks = torch.empty_like(order)
+        ranks.scatter_(
+            1,
+            order,
+            torch.arange(1, n_items + 1, device=order.device)
+            .unsqueeze(0)
+            .expand_as(order),
+        )
+        return ranks
 
     def predict_proba(self, x):
         weights = self.forward(x)
@@ -262,68 +365,121 @@ class PlackettLuceModel(nn.Module):
         return probs
 
     def predict_proba_ranking_logits(self, weights, rank):
+        """Return P(rank | weights) for each sample.
 
-        if len(rank.shape) == 1:
-            rank = rank.expand(weights.shape[0], -1)
-        idx_rank_sort = torch.argsort(rank, dim=-1, descending=True)
-        weights = torch.gather(
-            weights, 1, idx_rank_sort
-        )  # the exps that the highest rank (1) comes last
-        cum_sums = torch.cumsum(weights, dim=-1)
-        probs = (weights / cum_sums).prod(dim=-1)
+        Notes:
+                - `rank` is expected to be ranks-per-item (inverse permutation):
+                    rank[i] is the rank of item (i+1).
+        - `weights` are positive per-item scores (we use softmax outputs).
+        """
 
-        # print("PROBS: ", probs)
-        if any(probs.isnan()):
-            print("LOGITS: ", weights)
-            print("RANK: ", rank)
-            print("CUM SUMS: ", cum_sums)
-            print("PROBS: ", probs)
-            raise ValueError("NaN values in probabilities.")
-        return probs
+        log_probs = self.log_proba_ranking_logits(weights, rank)
+        return torch.exp(log_probs)
+
+    def log_proba_ranking_logits(
+        self, weights: torch.Tensor, rank: torch.Tensor
+    ) -> torch.Tensor:
+        """Return log P(rank | weights) for each sample (numerically stable).
+
+        `rank` is ranks-per-item (inverse permutation).
+        """
+
+        if rank.dim() == 1:
+            rank = rank.unsqueeze(0).expand(weights.shape[0], -1)
+        rank = rank.to(dtype=torch.long)
+
+        # Convert ranks-per-item -> order best->worst (item IDs in {1..n}).
+        order = torch.argsort(rank, dim=-1) + 1
+        weights_ranked = torch.gather(weights, 1, order - 1)
+
+        # Denominator at each position is the sum of remaining weights.
+        # remaining_sums[k] = sum_{j=k..n-1} weights_ranked[j]
+        remaining_sums = torch.flip(
+            torch.cumsum(torch.flip(weights_ranked, dims=[-1]), dim=-1), dims=[-1]
+        )
+
+        eps = torch.finfo(weights.dtype).tiny
+        log_term = torch.log(weights_ranked.clamp_min(eps)) - torch.log(
+            remaining_sums.clamp_min(eps)
+        )
+        log_prob = log_term.sum(dim=-1)
+
+        if torch.isnan(log_prob).any() or torch.isinf(log_prob).any():
+            raise ValueError("NaN/Inf in Plackett-Luce log probability.")
+
+        return log_prob
 
     def predict_ranking_distribution(self, x, restricted_rankings=None):
         weights = self.forward(x)
         if restricted_rankings is None:
-            rankings = permutations(range(1, self.n_items + 1))
+            rankings = list(permutations(range(1, self.n_items + 1)))
         else:
             rankings = restricted_rankings
         distribution = {}
-        for rank in rankings:
-            rank_tensor = (
-                torch.tensor(rank, device=weights.device)
+        for i in tqdm(range(len(rankings)), desc="Predicting ranking distribution PL"):
+            order = tuple(rankings[i])
+            order_tensor = (
+                torch.tensor(order, device=weights.device)
                 .unsqueeze(0)
                 .expand(x.shape[0], -1)
             )
-            probs = self.predict_proba_ranking_logits(weights, rank_tensor)
-            distribution[rank] = probs.detach()
+            ranks_tensor = _order_to_ranks_tensor(order_tensor, self.n_items)
+            probs = self.predict_proba_ranking_logits(weights, ranks_tensor)
+            distribution[order] = probs.detach()
         return distribution
 
-    def predict_proba_ranking(self, x, rank):
+    def predict_proba_ranking(self, x, ranking):
+        """Return P(ordering | weights) for each sample.
+
+        `ranking` is a best->worst order tuple/tensor of item IDs.
+        """
         weights = self.forward(x)
-        return self.predict_proba_ranking_logits(weights, rank)
+        ranking = torch.as_tensor(ranking, device=weights.device)
+        if ranking.dim() == 1:
+            ranking = ranking.unsqueeze(0)
+        if ranking.shape[0] == 1 and weights.shape[0] > 1:
+            ranking = ranking.expand(weights.shape[0], -1)
+        ranks = _order_to_ranks_tensor(ranking, self.n_items)
+        return self.predict_proba_ranking_logits(weights, ranks)
 
 
 class MallowsModel(nn.Module):
+    """Mallows model.
+
+    Conventions used in this repo:
+    - `.predict(...)` returns **ranks-per-item**.
+    - `.predict_ranking_distribution(...)` returns a dict keyed by **orderings**
+        (best->worst tuples of item IDs).
+    """
+
     def __init__(
         self,
         reference_ranking: torch.Tensor,
         dispersion: float,
         distance_metric: str = "kendall",
     ):
-        self.reference_ranking = reference_ranking
-        self.n_items = reference_ranking.shape[0]
+        super().__init__()
+        # Public convention for distributions in this repo is to use *orderings*
+        # (best->worst item IDs). Internally, for pairwise comparisons we store
+        # the reference ranking as ranks-per-item.
+        self.reference_order = reference_ranking.to(dtype=torch.long)
+        self.n_items = int(reference_ranking.shape[0])
+        self.reference_ranks = _order_to_ranks_tensor(
+            self.reference_order, self.n_items
+        ).squeeze(0)
         self.theta = dispersion
         self.dispersion = np.exp(-dispersion)
         self.distance_metric = distance_metric
         self.normalization_constant = self.compute_normalization_constant()
 
     def compute_distance(self, rank1: torch.Tensor):
+        """Compute distance where rank1 is ranks-per-item."""
         if self.distance_metric == "kendall":
             distance = 0
             for i in range(self.n_items):
                 for j in range(i + 1, self.n_items):
                     if (rank1[i] - rank1[j]) * (
-                        self.reference_ranking[i] - self.reference_ranking[j]
+                        self.reference_ranks[i] - self.reference_ranks[j]
                     ) < 0:
                         distance += 1
             return distance
@@ -343,29 +499,43 @@ class MallowsModel(nn.Module):
         return None
 
     def predict_proba_ranking(self, x, ranking: torch.Tensor):
-        if len(ranking.shape) == 1:
-            ranking = ranking.expand(x.shape[0], -1)
+        """Return P(ordering | model) for each sample.
+
+        `ranking` is expected to be a best->worst ordering of item IDs.
+        """
+        ranking = torch.as_tensor(ranking)
+        if ranking.dim() == 1:
+            ranking = ranking.unsqueeze(0)
+        n_samples = int(getattr(x, "shape", [1])[0]) if x is not None else 1
+        if ranking.shape[0] == 1 and n_samples > 1:
+            ranking = ranking.expand(n_samples, -1)
+        # Convert ordering -> ranks-per-item for distance computation.
+        ranks = _order_to_ranks_tensor(
+            ranking.to(self.reference_order.device), self.n_items
+        )
         distance_to_reference = torch.tensor(
-            [self.compute_distance(r) for r in ranking]
+            [self.compute_distance(r) for r in ranks], device=ranks.device
         )
         probs = self.normalization_constant * (self.dispersion**distance_to_reference)
         return probs
 
     def predict(self, x):
-        return self.reference_ranking.expand(x.shape[0], -1).long()
+        # Return ranks-per-item (inverse permutation).
+        return self.reference_ranks.expand(x.shape[0], -1).long()
 
     def predict_ranking_distribution(self, x, restricted_rankings=None):
         if restricted_rankings is None:
-            rankings = permutations(range(1, self.n_items + 1))
+            rankings = list(permutations(range(1, self.n_items + 1)))
         else:
             rankings = restricted_rankings
         distribution = {}
         for rank in rankings:
+            order = tuple(rank)
             rank_tensor = (
-                torch.tensor(rank, device=x.device).unsqueeze(0).expand(x.shape[0], -1)
+                torch.tensor(order, device=x.device).unsqueeze(0).expand(x.shape[0], -1)
             )
             probs = self.predict_proba_ranking(x, rank_tensor)
-            distribution[rank] = probs.detach()
+            distribution[order] = probs.detach()
         return distribution
 
     @classmethod
@@ -381,8 +551,12 @@ class MallowsModel(nn.Module):
                 f"Unsupported distance metric '{distance_metric}'. Choose 'kendall' or 'cayley'."
             )
 
-        rankings_np = rankings.detach().cpu().numpy()
-        modal_ranking = _mean_rank_initialization(rankings_np)
+        # `rankings` comes from datasets in this repo as ranks-per-item.
+        rankings_np_ranks = rankings.detach().cpu().numpy()
+        # Convert to best->worst orderings for the neighbor search utilities below.
+        rankings_np = np.argsort(rankings_np_ranks, axis=1) + 1
+        modal_ranking = _mean_rank_initialization(rankings_np_ranks)
+
         theta = 1.0
         prev_log_likelihood = None
 
@@ -426,14 +600,14 @@ class MallowsModel(nn.Module):
 
 
 def _mean_rank_initialization(rankings: np.ndarray) -> np.ndarray:
-    n_items = rankings.shape[1]
-    mean_positions = np.zeros(n_items, dtype=np.float64)
-    for ranking in rankings:
-        for position, item in enumerate(ranking):
-            mean_positions[int(item) - 1] += position
-    mean_positions /= rankings.shape[0]
-    ordering = np.argsort(mean_positions)
-    return (ordering + 1).astype(np.int64)
+    """Initialize a modal *ordering* from ranks-per-item data.
+
+    rankings is ranks-per-item (inverse permutations), shape (N, n_items).
+    Returns a best->worst ordering (item IDs).
+    """
+    mean_ranks = rankings.astype(np.float64).mean(axis=0)
+    ordering = np.argsort(mean_ranks) + 1
+    return ordering.astype(np.int64)
 
 
 def _distance_fn(distance_metric: str):

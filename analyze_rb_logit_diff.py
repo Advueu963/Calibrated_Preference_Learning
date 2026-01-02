@@ -8,6 +8,7 @@ Computes: mean(|chosen_score - rejected_score|) across all examples and rejected
 import argparse
 import csv
 import json
+import os
 import re
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -210,7 +211,7 @@ def compute_correlations(results: list[dict]) -> dict[str, tuple[float, float]]:
     return correlations
 
 
-def visualize_correlation(correlations: dict[str, tuple[float, float]]):
+def visualize_correlation(correlations: dict[str, tuple[float, float]], save_folder: str = "rlhf_ece"):
     # Visualize correlations using a cleaner, more readable bar chart
     import matplotlib.pyplot as plt
 
@@ -254,10 +255,10 @@ def visualize_correlation(correlations: dict[str, tuple[float, float]]):
     ax.grid(True, axis="x", alpha=0.35)
     ax.grid(False, axis="y")
 
-    fig.savefig("ece_correlation_bar_chart.png", dpi=200, bbox_inches="tight")
+    fig.savefig(os.path.join(save_folder, "ece_correlation_bar_chart.png"), dpi=200, bbox_inches="tight")
 
 
-def visualize_accuracy_rejection_curve(results: list[dict], k: int = 10):
+def visualize_accuracy_rejection_curve(results: list[dict], k: int = 10, save_folder: str = "rlhf_ece"):
     """Plot accuracy on the remaining set after rejecting highest-entropy points.
 
     X-axis: fraction removed (reject p% highest entropy)
@@ -366,11 +367,11 @@ def visualize_accuracy_rejection_curve(results: list[dict], k: int = 10):
     ax.legend(handles=handles, frameon=False, loc="lower left")
 
     fig.savefig(
-        f"accuracy_rejection_curve_entropy_{k}.png", dpi=200, bbox_inches="tight"
+        os.path.join(save_folder, f"accuracy_rejection_curve_entropy_{k}.png"), dpi=200, bbox_inches="tight"
     )
 
 
-def visualize_accuracy_rejection_curve_by_rank(results: list[dict], k: int = 10):
+def visualize_accuracy_rejection_curve_by_rank(results: list[dict], k: int = 10, save_folder: str = "rlhf_ece"):
     """Plot accuracy–rejection curves colored by leaderboard rank.
 
     X-axis: fraction removed (reject p% highest entropy)
@@ -479,13 +480,13 @@ def visualize_accuracy_rejection_curve_by_rank(results: list[dict], k: int = 10)
     ax.legend(handles=handles, frameon=False, loc="lower left")
 
     fig.savefig(
-        f"accuracy_rejection_curve_entropy_rank_colored_{k}.png",
+        os.path.join(save_folder, f"accuracy_rejection_curve_entropy_rank_colored_{k}.png"),
         dpi=200,
         bbox_inches="tight",
     )
 
 
-def visualize_accuracy_rejection_curve_by_factuality(results: list[dict], k: int = 10):
+def visualize_accuracy_rejection_curve_by_factuality(results: list[dict], k: int = 10, save_folder: str = "rlhf_ece"):
     """Plot accuracy–rejection curves colored by factuality.
 
     X-axis: fraction removed (reject p% highest entropy)
@@ -610,13 +611,13 @@ def visualize_accuracy_rejection_curve_by_factuality(results: list[dict], k: int
     ax.legend(handles=handles, frameon=False, loc="lower left")
 
     fig.savefig(
-        f"accuracy_rejection_curve_entropy_factuality_colored_{k}.png",
+        os.path.join(save_folder, f"accuracy_rejection_curve_entropy_factuality_colored_{k}.png"),
         dpi=200,
         bbox_inches="tight",
     )
 
 
-def visualize_accuracy_rejection_curve_by_math(results: list[dict], k: int = 10):
+def visualize_accuracy_rejection_curve_by_math(results: list[dict], k: int = 10, save_folder: str = "rlhf_ece"):
     """Plot accuracy–rejection curves colored by math.
 
     X-axis: fraction removed (reject p% highest entropy)
@@ -729,13 +730,13 @@ def visualize_accuracy_rejection_curve_by_math(results: list[dict], k: int = 10)
     ax.legend(handles=handles, frameon=False, loc="lower left")
 
     fig.savefig(
-        f"accuracy_rejection_curve_entropy_math_colored_{k}.png",
+        os.path.join(save_folder, f"accuracy_rejection_curve_entropy_math_colored_{k}.png"),
         dpi=200,
         bbox_inches="tight",
     )
 
 
-def visualize_accuracy_rejection_curve_by_safety(results: list[dict], k: int = 10):
+def visualize_accuracy_rejection_curve_by_safety(results: list[dict], k: int = 10, save_folder: str = "rlhf_ece"):
     """Plot accuracy–rejection curves colored by safety.
 
     X-axis: fraction removed (reject p% highest entropy)
@@ -838,13 +839,13 @@ def visualize_accuracy_rejection_curve_by_safety(results: list[dict], k: int = 1
     ax.legend(handles=handles, frameon=False, loc="lower left")
 
     fig.savefig(
-        f"accuracy_rejection_curve_entropy_safety_colored_{k}.png",
+        os.path.join(save_folder, f"accuracy_rejection_curve_entropy_safety_colored_{k}.png"),
         dpi=200,
         bbox_inches="tight",
     )
 
 
-def visualize_accuracy_rejection_curve_by_focus(results: list[dict], k: int = 10):
+def visualize_accuracy_rejection_curve_by_focus(results: list[dict], k: int = 10, save_folder: str = "rlhf_ece"):
     """Plot accuracy–rejection curves colored by focus.
 
     X-axis: fraction removed (reject p% highest entropy)
@@ -947,13 +948,13 @@ def visualize_accuracy_rejection_curve_by_focus(results: list[dict], k: int = 10
     ax.legend(handles=handles, frameon=False, loc="lower left")
 
     fig.savefig(
-        f"accuracy_rejection_curve_entropy_focus_colored_{k}.png",
+        os.path.join(save_folder, f"accuracy_rejection_curve_entropy_focus_colored_{k}.png"),
         dpi=200,
         bbox_inches="tight",
     )
 
 
-def visualize_accuracy_rejection_curve_by_ties(results: list[dict], k: int = 10):
+def visualize_accuracy_rejection_curve_by_ties(results: list[dict], k: int = 10, save_folder: str = "rlhf_ece"):
     """Plot accuracy–rejection curves colored by ties.
 
     X-axis: fraction removed (reject p% highest entropy)
@@ -1056,7 +1057,7 @@ def visualize_accuracy_rejection_curve_by_ties(results: list[dict], k: int = 10)
     ax.legend(handles=handles, frameon=False, loc="lower left")
 
     fig.savefig(
-        f"accuracy_rejection_curve_entropy_ties_colored_{k}.png",
+        os.path.join(save_folder, f"accuracy_rejection_curve_entropy_ties_colored_{k}.png"),
         dpi=200,
         bbox_inches="tight",
     )
@@ -1411,6 +1412,9 @@ def main():
     )
     args = parser.parse_args()
 
+    with open('label_ranking_datasets.json', 'r') as f:
+        label_ranking_datasets = json.load(f)
+
     if not args.leaderboard.exists():
         print(f"Leaderboard file not found: {args.leaderboard}")
         print(
@@ -1484,22 +1488,45 @@ def main():
             print(f"  {rank:2}. {model_name}: No logit scores (generative model)")
             continue
 
-        scores_data_filtered = {}
-        for key in scores_data:
-            scores_data_filtered[key] = [
-                v
-                for i, v in enumerate(scores_data[key])
-                if scores_data["num_correct"][i] == 1
-            ]
-        scores_data = scores_data_filtered
-        (
-            mean_margin,
-            margin_to_mean,
-            n_examples,
-            ece,
-            entropy,
-            model_correct_alternatives,
-        ) = compute_margins(scores_data)
+        results_per_dataset = []
+        for indices_to_keep in label_ranking_datasets.values():
+            scores_data_filtered = {}
+            for key in scores_data:
+                scores_data_filtered[key] = [
+                    v
+                    for i, v in enumerate(scores_data[key])
+                    if scores_data["num_correct"][i] == 1
+                    and scores_data["id"][i] in indices_to_keep
+                ]
+
+            (
+                mean_margin,
+                margin_to_mean,
+                n_examples,
+                ece,
+                entropy,
+                model_correct_alternatives,
+            ) = compute_margins(scores_data_filtered)
+            results_per_dataset.append((
+                mean_margin,
+                margin_to_mean,
+                n_examples,
+                ece,
+                entropy,
+                model_correct_alternatives,
+            ))
+        # Aggregate results across datasets
+        mean_margin = np.mean([r[0] for r in results_per_dataset])
+        margin_to_mean = np.mean([r[1] for r in results_per_dataset])
+        n_examples = np.sum([r[2] for r in results_per_dataset])
+        ece = np.mean([r[3] for r in results_per_dataset])
+        raw_ece = [r[3] for r in results_per_dataset]
+        entropy = np.concatenate([r[4] for r in results_per_dataset])
+        raw_entropy =[r[4] for r in results_per_dataset]
+        model_correct_alternatives = np.concatenate([r[5] for r in results_per_dataset])
+        raw_model_correct_alternatives = [r[5] for r in results_per_dataset]
+
+        
 
         results.append(
             {
@@ -1519,6 +1546,9 @@ def main():
                 "entropy": entropy,
                 "model_accuracy": np.mean(model_correct_alternatives),
                 "model_correct_alternatives": model_correct_alternatives,
+                "raw_ece": raw_ece,
+                "raw_entropy": raw_entropy,
+                "raw_model_correct_alternatives": raw_model_correct_alternatives,
                 "n_examples": n_examples,
             }
         )
@@ -1554,46 +1584,59 @@ def main():
     print("=" * 90)
 
     # Compute and visualize correlations
+    save_folder = "rlhf_ece"
+    os.makedirs(save_folder, exist_ok=True)
     correlations = compute_correlations(results)
-    visualize_correlation(correlations)
+    visualize_correlation(correlations, save_folder=save_folder)
 
     # Visualize accuracy–rejection curve (reject highest entropy first), colored by ECE
-    visualize_accuracy_rejection_curve(results, k=args.k)
+    visualize_accuracy_rejection_curve(results, k=args.k, save_folder=save_folder)
 
     # Visualize accuracy–rejection curve colored by leaderboard rank
-    visualize_accuracy_rejection_curve_by_rank(results, k=args.k)
+    visualize_accuracy_rejection_curve_by_rank(results, k=args.k, save_folder=save_folder)
 
     # Visualize accuracy–rejection curve colored by factuality
-    visualize_accuracy_rejection_curve_by_factuality(results, k=args.k)
+    visualize_accuracy_rejection_curve_by_factuality(results, k=args.k, save_folder=save_folder)
 
     # Visualize accuracy–rejection curve colored by math
-    visualize_accuracy_rejection_curve_by_math(results, k=args.k)
+    visualize_accuracy_rejection_curve_by_math(results, k=args.k, save_folder=save_folder)
 
     # Visualize accuracy–rejection curve colored by safety
-    visualize_accuracy_rejection_curve_by_safety(results, k=args.k)
+    visualize_accuracy_rejection_curve_by_safety(results, k=args.k, save_folder=save_folder)
 
     # Visualize accuracy–rejection curve colored by focus
-    visualize_accuracy_rejection_curve_by_focus(results, k=args.k)
+    visualize_accuracy_rejection_curve_by_focus(results, k=args.k, save_folder=save_folder)
 
     # Visualize accuracy–rejection curve colored by ties
-    visualize_accuracy_rejection_curve_by_ties(results, k=args.k)
+    visualize_accuracy_rejection_curve_by_ties(results, k=args.k, save_folder=save_folder)
 
     # Quantify how well each metric groups accuracy–rejection curves
     quantify_grouping_quality(
         results,
         k=args.k,
         grid_size=101,
-        output_csv=f"accuracy_rejection_grouping_quality_k{args.k}.csv",
-        output_plot=f"accuracy_rejection_curve_group_variance_topk_k{args.k}.png",
-        output_side_by_side_plot=f"accuracy_rejection_curve_group_variance_and_separation_topk_k{args.k}.png",
+        output_csv=os.path.join(save_folder, f"accuracy_rejection_grouping_quality_k{args.k}.csv"),
+        output_plot=os.path.join(save_folder, f"accuracy_rejection_curve_group_variance_topk_k{args.k}.png"),
+        output_side_by_side_plot=os.path.join(save_folder, f"accuracy_rejection_curve_group_variance_and_separation_topk_k{args.k}.png"),
     )
 
     # Write results to csv
     df = pd.DataFrame(results)
-    output_csv = "rbv2_margin_metrics.csv"
+    output_csv = os.path.join(save_folder, f"rbv2_margin_metrics_{args.k}.csv")
     df.to_csv(output_csv, index=False)
     print(f"\nResults written to {output_csv}")
 
+    # Print out the top-10 ranked Models based on Leaderboard Score
+    print("\nTop 10 Models based on Leaderboard Score:")
+    top_10_leaderboard = sorted(results, key=lambda x: x["rank"])[:10]
+    top_10_leaderboard_names = [r["model"] for r in top_10_leaderboard]
+    print(" > ".join(top_10_leaderboard_names))
+
+    # Print out the top-10 ranked Models based on ECE Score
+    print("\nTop 10 Models based on ECE Score:")
+    top_10_ece = sorted(results, key=lambda x: x["ece_score"])[:10]
+    top_10_ece_names = [r["model"] for r in top_10_ece]
+    print(" > ".join(top_10_ece_names))
 
 if __name__ == "__main__":
     main()

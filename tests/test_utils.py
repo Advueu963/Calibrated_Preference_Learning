@@ -18,19 +18,35 @@ from cal_pref.utils import (
 )
 
 
+def _order_to_ranks(order: torch.Tensor) -> torch.Tensor:
+    """Convert orderings (best->worst item IDs) to ranks-per-item (inverse permutation)."""
+    if order.ndim != 2:
+        raise ValueError("order must be 2D")
+    n_samples, n_items = order.shape
+    ranks = torch.empty_like(order)
+    ranks.scatter_(
+        1,
+        order - 1,
+        torch.arange(1, n_items + 1, device=order.device, dtype=order.dtype)
+        .unsqueeze(0)
+        .expand(n_samples, n_items),
+    )
+    return ranks
+
+
 def test_binary_ece():
 
     y_true = torch.tensor([1, 0, 1, 1, 1, 0], dtype=torch.float32)
     y_prob = torch.tensor(
         [3 / 4, 1 / 2, 1 / 2, 3 / 4, 3 / 4, 3 / 4], dtype=torch.float32
     )
-    ece = calculate_binary_ece(y_true, y_prob, equal_frequency_bins=False, n_bins=4)
+    ece = calculate_binary_ece(y_true, y_prob, n_bins=4)
     expected_ece = 0.0  # Perfect calibration in this example
     assert abs(ece - expected_ece) < 1e-6
 
     y_true = torch.tensor([1, 0, 1, 1, 0], dtype=torch.float32)
     y_prob = torch.tensor([3 / 4, 1 / 2, 3 / 4, 3 / 4, 3 / 4], dtype=torch.float32)
-    ece = calculate_binary_ece(y_true, y_prob, equal_frequency_bins=False, n_bins=4)
+    ece = calculate_binary_ece(y_true, y_prob, n_bins=4)
     expected_ece = (1 / 5) * 0.5  # The first bin is miscalibrated by 0.5
     assert abs(ece - expected_ece) < 1e-6
 
@@ -52,7 +68,8 @@ def test_sub_k_in_full_ranking():
 
 def test_construct_sub_k_tensors():
 
-    rankings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    orderings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    rankings = _order_to_ranks(orderings)
     ranking_to_probs = {(3, 1, 4, 2, 5): [0.6, 0.3], (2, 1, 3, 4, 5): [0.4, 0.7]}
 
     sub_k_ranking = [1, 2, 5]
@@ -61,12 +78,13 @@ def test_construct_sub_k_tensors():
         sub_k_ranking, rankings, ranking_to_probs
     )
 
-    expected = torch.tensor([1, 0])
-    assert torch.equal(sub_k_tensors, expected)
+    expected = torch.tensor([1.0, 0.0], dtype=torch.float32)
+    assert torch.allclose(sub_k_tensors, expected)
     expected_probs = torch.tensor([0.6, 0.3], dtype=torch.float32)
     assert torch.allclose(sub_k_probs, expected_probs)
 
-    rankings = torch.tensor([[3, 1, 4, 2, 5], [1, 2, 3, 4, 5]], dtype=torch.long)
+    orderings = torch.tensor([[3, 1, 4, 2, 5], [1, 2, 3, 4, 5]], dtype=torch.long)
+    rankings = _order_to_ranks(orderings)
     ranking_to_probs = {(3, 1, 4, 2, 5): [0.6, 0.3], (1, 2, 3, 4, 5): [0.4, 0.7]}
 
     sub_k_ranking = [1, 2, 5]
@@ -75,17 +93,18 @@ def test_construct_sub_k_tensors():
         sub_k_ranking, rankings, ranking_to_probs
     )
 
-    expected = torch.tensor([1, 1])
-    assert torch.equal(sub_k_tensors, expected)
+    expected = torch.tensor([1.0, 1.0], dtype=torch.float32)
+    assert torch.allclose(sub_k_tensors, expected)
     expected_probs = torch.tensor([1, 1], dtype=torch.float32)
     assert torch.allclose(sub_k_probs, expected_probs)
 
 
 def test_sub_k_calibration():
-    rankings = torch.tensor(
+    orderings = torch.tensor(
         [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
         dtype=torch.long,
     )
+    rankings = _order_to_ranks(orderings)
     ranking_to_prob = {
         (1, 2, 3): [2 / 6] * len(rankings),
         (1, 3, 2): [1 / 12] * len(rankings),
@@ -104,10 +123,11 @@ def test_sub_k_calibration():
     expected_ece = 0.0  # Perfect calibration in this example
     assert abs(total_ece - expected_ece) < 1e-6
 
-    rankings = torch.tensor(
+    orderings = torch.tensor(
         [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
         dtype=torch.long,
     )
+    rankings = _order_to_ranks(orderings)
     ranking_to_prob = {
         (1, 2, 3): [1 / 3] * len(rankings),
         (1, 3, 2): [0] * len(rankings),
@@ -146,7 +166,8 @@ def test_top_k_in_full_ranking():
 
 def test_construct_top_k_tensors():
 
-    rankings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    orderings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    rankings = _order_to_ranks(orderings)
     ranking_to_probs = {(3, 1, 4, 2, 5): [0.6, 0.3], (2, 1, 3, 4, 5): [0.4, 0.7]}
 
     top_k_ranking = [3, 1, 4]
@@ -155,12 +176,13 @@ def test_construct_top_k_tensors():
         top_k_ranking, rankings, ranking_to_probs
     )
 
-    expected = torch.tensor([1, 0])
-    assert torch.equal(top_k_tensors, expected)
+    expected = torch.tensor([1.0, 0.0], dtype=torch.float32)
+    assert torch.allclose(top_k_tensors, expected)
     expected_probs = torch.tensor([0.6, 0.3], dtype=torch.float32)
     assert torch.allclose(top_k_probs, expected_probs)
 
-    rankings = torch.tensor([[3, 1, 4, 2, 5], [1, 2, 3, 4, 5]], dtype=torch.long)
+    orderings = torch.tensor([[3, 1, 4, 2, 5], [1, 2, 3, 4, 5]], dtype=torch.long)
+    rankings = _order_to_ranks(orderings)
     ranking_to_probs = {
         (3, 1, 4, 2, 5): [0.6, 0.3],
         (3, 1, 4, 4, 5): [0.4, 0],
@@ -172,17 +194,18 @@ def test_construct_top_k_tensors():
         top_k_ranking, rankings, ranking_to_probs
     )
 
-    expected = torch.tensor([1, 0])
-    assert torch.equal(top_k_tensors, expected)
+    expected = torch.tensor([1.0, 0.0], dtype=torch.float32)
+    assert torch.allclose(top_k_tensors, expected)
     expected_probs = torch.tensor([1, 0.3], dtype=torch.float32)
     assert torch.allclose(top_k_probs, expected_probs)
 
 
 def test_top_k_calibration():
-    rankings = torch.tensor(
+    orderings = torch.tensor(
         [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
         dtype=torch.long,
     )
+    rankings = _order_to_ranks(orderings)
     ranking_to_prob = {
         (1, 2, 3): [1 / 3] * len(rankings),
         (1, 3, 2): [0] * len(rankings),
@@ -207,10 +230,11 @@ def test_top_k_calibration():
 # Unit Tests for rank-wise calibration #
 #######################################
 def test_rankwise_calibration():
-    rankings = torch.tensor(
+    orderings = torch.tensor(
         [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
         dtype=torch.long,
     )
+    rankings = _order_to_ranks(orderings)
     ranking_to_prob = {
         (1, 2, 3): [1 / 3] * len(rankings),
         (1, 3, 2): [0] * len(rankings),
@@ -259,7 +283,8 @@ def test_rankwise_calibration():
 #####################################
 def test_construct_sub_k_full_rank_tensors():
 
-    rankings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    orderings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    rankings = _order_to_ranks(orderings)
     ranking_to_probs = [
         {(3, 1, 4, 2, 5): 0.6, (2, 1, 3, 4, 5): 0.4},
         {(2, 1, 3, 4, 5): 0.7, (3, 1, 4, 2, 5): 0.3},
@@ -298,10 +323,11 @@ def test_construct_sub_k_full_rank_tensors():
 
 
 def test_sub_k_full_rank_calibration():
-    rankings = torch.tensor(
+    orderings = torch.tensor(
         [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
         dtype=torch.long,
     )
+    rankings = _order_to_ranks(orderings)
     ranking_to_prob = {
         (1, 2, 3): 2 / 6,
         (1, 3, 2): 1 / 12,
@@ -334,10 +360,11 @@ def test_sub_k_full_rank_calibration():
     )
     total_ece_sub_k_calib = results_sub_k_calib["total_ece"]
 
-    rankings = torch.tensor(
+    orderings = torch.tensor(
         [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
         dtype=torch.long,
     )
+    rankings = _order_to_ranks(orderings)
     ranking_to_prob = {
         (1, 2, 3): 1 / 3,
         (1, 3, 2): 0,
@@ -371,7 +398,8 @@ def test_sub_k_full_rank_calibration():
 ###################################
 def test_construct_top_k_full_rank_tensors():
 
-    rankings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    orderings = torch.tensor([[3, 1, 4, 2, 5], [2, 1, 3, 4, 5]], dtype=torch.long)
+    rankings = _order_to_ranks(orderings)
     ranking_to_probs = [
         {(3, 1, 4, 2, 5): 0.6, (2, 1, 3, 4, 5): 0.4},
         {(2, 1, 3, 4, 5): 0.7, (3, 1, 4, 2, 5): 0.3},
@@ -409,10 +437,11 @@ def test_construct_top_k_full_rank_tensors():
 
 
 def test_top_k_full_rank_calibration():
-    rankings = torch.tensor(
+    orderings = torch.tensor(
         [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
         dtype=torch.long,
     )
+    rankings = _order_to_ranks(orderings)
     ranking_to_prob = {
         (1, 2, 3): 1 / 3,
         (1, 3, 2): 0,
@@ -457,22 +486,21 @@ def test_from_bradley_terry_to_plackett_luce():
     # Normalize the scores
     recovered_pl_scores /= np.sum(recovered_pl_scores)
     assert np.allclose(pl_scores, recovered_pl_scores, atol=1e-6)
-    
-    
+
     # recovered_pl_scores = from_bradley_terry_to_placket_luce_map(
     #     rng=rng, pair_order_matrices=bt_matrix, n_iterations=100_000
     # )[0]
     # # Normalize the scores
     # recovered_pl_scores /= np.sum(recovered_pl_scores)
     # assert np.allclose(pl_scores, recovered_pl_scores, atol=1e-6)
-    
+
     recovered_pl_scores = from_bradley_terry_to_placket_luce_vectorized(
         rng=rng, pair_order_matrices=bt_matrix, n_iterations=100
     )[0]
     # Normalize the scores
     recovered_pl_scores /= np.sum(recovered_pl_scores)
     assert np.allclose(pl_scores, recovered_pl_scores, atol=1e-6)
-    
+
     recovered_pl_scores = from_bradley_terry_to_placet_luce_old(
         rng=rng, pair_order_matrices=bt_matrix, n_iterations=1000
     )[0]

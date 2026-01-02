@@ -9,6 +9,8 @@ import numpy as np
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.calibration import CalibratedClassifierCV
 import itertools
+
+from tqdm import tqdm
 from cal_pref.utils import (
     from_bradley_terry_to_placket_luce_vectorized,
     from_bradley_terry_to_placket_luce_simple,
@@ -117,8 +119,7 @@ def get_preference_models(
     # RPC Baseline with Calibrated Decision Tree
     estimator = DecisionTreeClassifier()
     # estimator = CalibratedClassifierCV(estimator=estimator, cv=5, method="sigmoid")
-    baseline_estimator = PairwiseLabelRanker(estimator=estimator, n_jobs=
-                                             int(os.environ["OMP_NUM_THREADS"]))
+    baseline_estimator = PairwiseLabelRanker(estimator=estimator, n_jobs=-1)
 
     models_optimizer_criterion = {
         "PreferenceModel": (preference_model, criterion, optimizer),
@@ -156,7 +157,7 @@ def train_plackett_luce_model(
     """
     ###### Training Loop #######
     generator = torch.Generator().manual_seed(42)
-    for epoch in range(num_epochs):
+    for epoch in tqdm(range(num_epochs), desc="Training Plackett-Luce Model"):
         X_batch_indices = torch.randperm(X_train_tensor.size(0), generator=generator)
         for i in range(0, X_train_tensor.size(0), batch_size):
             batch_indices = X_batch_indices[i : i + batch_size]
@@ -171,7 +172,9 @@ def train_plackett_luce_model(
             # MSE between predicted distribution and empirical distribution
 
             loss.backward()
+            
             plackett_optimizer.step()
+            #print(f"Epoch {epoch}, Batch {i//batch_size}, Loss: {loss.item()}")
 
 
 def train_preference_model(
@@ -196,7 +199,7 @@ def train_preference_model(
     """
     ###### Training Loop #######
     generator = torch.Generator().manual_seed(42)
-    for epoch in range(num_epochs):
+    for epoch in tqdm(range(num_epochs), desc="Training Preference Model"):
         X_batch_indices = torch.randperm(X_train_tensor.size(0), generator=generator)
         for i in range(0, X_train_tensor.size(0), batch_size):
             batch_indices = X_batch_indices[i : i + batch_size]
@@ -211,7 +214,6 @@ def train_preference_model(
                 [preference_model.idx_rankings[tuple(r.tolist())] for r in y_batch],
                 device=logits.device,
             ).long()
-
             # loss_pref = criterion(logits, y_batch_idx)
             loss_pref = criterion(logits, y_batch_idx)
             loss_pref.backward()
@@ -276,8 +278,7 @@ def train_placket_luce_rpc_model(
         tau_score(y_train, baseline_estimator.predict(X_train)),
     )
     baseline_estimator_matrix = baseline_estimator.get_pairwise_matrix(X_test)
-
-    
+    print("Running RPC to PL conversion...")
     match method_rpc_pl:
         case "vectorized":
             placket_luce_weights = from_bradley_terry_to_placket_luce_vectorized(
@@ -722,6 +723,11 @@ def get_pairwise_probs(
         for pair in possible_pairs
     }
     return results
+
+
+def _ranks_to_order_np(ranks: np.ndarray) -> np.ndarray:
+    """Convert ranks-per-item (N, n_items) to best->worst orderings (N, n_items)."""
+    return np.argsort(ranks, axis=1) + 1
 
 
 def evaluate_calibration_rankwise_sub_k_top_k(
@@ -1393,10 +1399,14 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name = args.dataset  
-    RANK_WEIGHTING = args.rank_weighting #"most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
-    DISCREPANCY = args.discrepancy #"abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
-    BIN_SPACING = args.bin_spacing # "linear"  # Options: "linear", "log"
+    dataset_name = "movies"  # args.dataset
+    RANK_WEIGHTING = (
+        "uniform" #args.rank_weighting
+    )  # "most_confident"  # Options: "uniform", "prevalence", "pred_mass", "most_confident"
+    DISCREPANCY = (
+        args.discrepancy
+    )  # "abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
+    BIN_SPACING = args.bin_spacing  # "linear"  # Options: "linear", "log"
 
     if dataset_name.startswith("synthetic"):
         X, y, y_true_probs = synthetic_data(
@@ -1428,10 +1438,19 @@ if __name__ == "__main__":
     res_tau_dist = []
 
     # ####### Ranking Predictions (make sure the models have well-defined probabilities) #######
-    if dataset_name not in ["movies","letter","libras","vowel","pendigit","yeast"]: # For very large ranking spaces, we only consider the observed rankings in the test set
+    if dataset_name not in [
+        "movies",
+        "letter",
+        "libras",
+        "vowel",
+        "pendigit",
+        "yeast",
+    ]:  # For very large ranking spaces, we only consider the observed rankings in the test set
         possible_rankings = construct_possible_rankings(y.shape[1])
     else:
-        possible_rankings = np.unique(y, axis=0)
+        # y is ranks-per-item; convert observed rankings to order tuples.
+        unique_ranks = np.unique(y, axis=0)
+        possible_rankings = _ranks_to_order_np(unique_ranks)
     proportion_of_considered_rankings_in_ece = len(possible_rankings) / factorial(
         y.shape[1]
     )
@@ -1504,7 +1523,7 @@ if __name__ == "__main__":
         #     y_train_tensor, distance_metric="kendall"
         # )
         #### Calibration Loop via Temperature Scaling ####
-        
+
         print("Calibrating Preference Model...")
         preference_model = calibrate_preference_model(
             preference_model,
@@ -1517,26 +1536,28 @@ if __name__ == "__main__":
         results = evaluate_kendal_models(
             models=[
                 plackett_luce_model,
-                #mallows_model_fold,
+                # mallows_model_fold,
                 preference_model,
                 placket_luce_model_baseline,
                 baseline_estimator,
             ],
-            criterions=[plackett_criterion, 
-                        #None, 
-                        preference_criterion, 
-                        None, 
-                        None],
+            criterions=[
+                plackett_criterion,
+                # None,
+                preference_criterion,
+                None,
+                None,
+            ],
             model_names=[
                 "PlackettLuce",
-                #"MallowsModel",
+                # "MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
             ],
             evaluate_functions=[
                 evaluate_placket_luce_model,
-                #evaluate_mallows_model,
+                # evaluate_mallows_model,
                 evaluate_preference_model,
                 evaluate_placket_luce_rpc_model,
                 evaluate_calibrated_rpc_model,
@@ -1554,7 +1575,7 @@ if __name__ == "__main__":
         res_tau_dist.append(
             (
                 results["PlackettLuce"][0],
-                #results["MallowsModel"][0],
+                # results["MallowsModel"][0],
                 results["PreferenceModel"][0],
                 results["PlackettLuceRPC"][0],
             )
@@ -1589,7 +1610,14 @@ if __name__ == "__main__":
         #     )
 
         ####### ECE Evaluation #######
-        if dataset_name in ["movies","letter","libras","vowel","pendigit","yeast"]: # For very large ranking spaces, we only consider the observed rankings in the test set
+        if dataset_name in [
+            "movies",
+            "letter",
+            "libras",
+            "vowel",
+            "pendigit",
+            "yeast",
+        ]:  # For very large ranking spaces, we only consider the observed rankings in the test set
             restricted_rankings = [tuple(r) for r in possible_rankings]
         else:
             restricted_rankings = None
@@ -1608,26 +1636,26 @@ if __name__ == "__main__":
             restricted_rankings=restricted_rankings,
         )
         distribution_rpc = {
-            torch.tensor((i, j)): baseline_estimator_matrix[:, i - 1, j - 1]
+            (i, j): baseline_estimator_matrix[:, i - 1, j - 1]
             for i in range(1, n_items + 1)
             for j in range(i + 1, n_items + 1)
         }
         dist_rpc = distribution_rpc.copy()
         for rank, prob in dist_rpc.items():
-            reversed_rank = reversed(rank)
+            reversed_rank = tuple(reversed(rank))
             distribution_rpc[reversed_rank] = 1.0 - prob
-
+        print("Evaluating Rank-wise Sub-k and Top-k ECE...")
         evaluate_calibration_rankwise_sub_k_top_k(
             distributions=[
                 distribution_pl,
-                #distribution_mallows,
+                # distribution_mallows,
                 distribution_pref,
                 distribution_rpc_pl,
                 distribution_rpc,
             ],
             model_names=[
                 "PlackettLuce",
-                #"MallowsModel",
+                # "MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
@@ -1641,18 +1669,18 @@ if __name__ == "__main__":
             discrepancy=DISCREPANCY,
             bin_spacing=BIN_SPACING,
         )
-
+        print("Evaluating Full-Rank Sub-k and Top-k ECE...")
         evaluate_calibration_full_rank_sub_k_top_k(
             distributions=[
                 distribution_pl,
-                #distribution_mallows,
+                # distribution_mallows,
                 distribution_pref,
                 distribution_rpc_pl,
                 distribution_rpc,
             ],
             model_names=[
                 "PlackettLuce",
-                #"MallowsModel",
+                # "MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
@@ -1683,7 +1711,7 @@ if __name__ == "__main__":
     #### Prepare Data for Visualization ####
     model_names = [
         "PlackettLuce",
-        #"MallowsModel",
+        # "MallowsModel",
         "PreferenceModel",
         "PlackettLuceRPC",
         "RPC",

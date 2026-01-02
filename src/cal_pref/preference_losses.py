@@ -22,11 +22,9 @@ class PlackettLuceLoss(nn.Module):
         super(PlackettLuceLoss, self).__init__()
 
     def forward(self, y_true, logits, model):
-        y_pred_probs_true_ranks = model.predict_proba_ranking_logits(logits, y_true)
-        loss = -torch.log(
-            y_pred_probs_true_ranks + 1e-10
-        )  # Add a small constant to avoid log(0)
-        return torch.mean(loss)
+        # Compute log-likelihood in log-space for numerical stability.
+        log_p = model.log_proba_ranking_logits(logits, y_true)
+        return (-log_p).mean()
 
 
 class PlackettLuceBrierPreferenceLoss(nn.Module):
