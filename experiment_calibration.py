@@ -964,14 +964,15 @@ def create_ece_reports(
     for m, model_name in enumerate(model_names):
         for j, k in enumerate(POSSIBLE_K_TOP_K):
             for fold_idx in range(top_k_matrix.shape[2]):
-                top_records.append(
-                    {
-                        "model": model_name,
-                        "k": POSSIBLE_K_TOP_K[j],
-                        "fold": fold_idx,
-                        "ece": top_k_matrix[m, j, fold_idx],
-                    }
-                )
+                if model_name != "RPC":
+                    top_records.append(
+                        {
+                            "model": model_name,
+                            "k": POSSIBLE_K_TOP_K[j],
+                            "fold": fold_idx,
+                            "ece": top_k_matrix[m, j, fold_idx],
+                        }
+                    )
     top_df = pd.DataFrame(top_records)
     top_df["k_label"] = top_df["k"].astype(str)
 
@@ -994,14 +995,15 @@ def create_ece_reports(
     for m, model_name in enumerate(model_names):
         for j, k in enumerate(POSSIBLE_K_TOP_K):
             for fold_idx in range(top_k_full_rank_matrix.shape[2]):
-                top_full_rank_records.append(
-                    {
-                        "model": model_name,
-                        "k": POSSIBLE_K_TOP_K[j],
-                        "fold": fold_idx,
-                        "ece": top_k_full_rank_matrix[m, j, fold_idx],
-                    }
-                )
+                if model_name != "RPC":
+                    top_full_rank_records.append(
+                        {
+                            "model": model_name,
+                            "k": POSSIBLE_K_TOP_K[j],
+                            "fold": fold_idx,
+                            "ece": top_k_full_rank_matrix[m, j, fold_idx],
+                        }
+                    )
     top_full_rank_df = pd.DataFrame(top_full_rank_records)
     top_full_rank_df["k_label"] = top_full_rank_df["k"].astype(str)
     return sub_df, top_df, sub_full_rank_df, top_full_rank_df
