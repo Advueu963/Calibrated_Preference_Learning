@@ -529,7 +529,10 @@ class MallowsModel(nn.Module):
         else:
             rankings = restricted_rankings
         distribution = {}
-        for rank in rankings:
+        for i in tqdm(
+            range(len(rankings)), desc="Predicting ranking distribution Mallows"
+        ):
+            rank = rankings[i]
             order = tuple(rank)
             rank_tensor = (
                 torch.tensor(order, device=x.device).unsqueeze(0).expand(x.shape[0], -1)

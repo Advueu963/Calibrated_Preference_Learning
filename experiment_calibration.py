@@ -276,7 +276,7 @@ def train_placket_luce_rpc_model(
         X_test (np.ndarray): Test data features.
         n_items (int): Number of items to rank.
     """
-    baseline_estimator.fit(X_train, y_train)
+    baseline_estimator = baseline_estimator.fit(X_train, y_train)
     print(
         "Tau Score of RPC Baseline on Train Set: ",
         tau_score(y_train, baseline_estimator.predict(X_train)),
@@ -1410,7 +1410,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name =  args.dataset
+    dataset_name =  "iris" #args.dataset
     RANK_WEIGHTING = (
         args.rank_weighting
     )  # "95_prob_mass"  # Options: "uniform", "prevalence", "pred_mass", "top_10"
@@ -1530,9 +1530,9 @@ if __name__ == "__main__":
             )
         )
         print("Fitting Mallows Model...")
-        # mallows_model_fold = MallowsModel.fit_from_data(
-        #     y_train_tensor, distance_metric="kendall"
-        # )
+        mallows_model_fold = MallowsModel.fit_from_data(
+            y_train_tensor, distance_metric="kendall"
+        )
         #### Calibration Loop via Temperature Scaling ####
 
         print("Calibrating Preference Model...")
@@ -1547,28 +1547,28 @@ if __name__ == "__main__":
         results = evaluate_kendal_models(
             models=[
                 plackett_luce_model,
-                # mallows_model_fold,
+                mallows_model_fold,
                 preference_model,
                 placket_luce_model_baseline,
                 baseline_estimator,
             ],
             criterions=[
                 plackett_criterion,
-                # None,
+                None,
                 preference_criterion,
                 None,
                 None,
             ],
             model_names=[
                 "PlackettLuce",
-                # "MallowsModel",
+                "MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
             ],
             evaluate_functions=[
                 evaluate_placket_luce_model,
-                # evaluate_mallows_model,
+                evaluate_mallows_model,
                 evaluate_preference_model,
                 evaluate_placket_luce_rpc_model,
                 evaluate_calibrated_rpc_model,
@@ -1586,7 +1586,7 @@ if __name__ == "__main__":
         res_tau_dist.append(
             (
                 results["PlackettLuce"][0],
-                # results["MallowsModel"][0],
+                results["MallowsModel"][0],
                 results["PreferenceModel"][0],
                 results["PlackettLuceRPC"][0],
             )
@@ -1607,10 +1607,10 @@ if __name__ == "__main__":
         distribution_pl = plackett_luce_model.predict_ranking_distribution(
             X_test_tensor, restricted_rankings=restricted_rankings
         )
-        # distribution_mallows = mallows_model_fold.predict_ranking_distribution(
-        #     X_test_tensor,
-        #     restricted_rankings=restricted_rankings,
-        # )
+        distribution_mallows = mallows_model_fold.predict_ranking_distribution(
+            X_test_tensor,
+            restricted_rankings=restricted_rankings,
+        )
         distribution_pref = preference_model.predict_ranking_distribution(
             X_test_tensor, restricted_rankings=restricted_rankings
         )
@@ -1633,14 +1633,14 @@ if __name__ == "__main__":
         evaluate_calibration_rankwise_sub_k_top_k(
             distributions=[
                 distribution_pl,
-                # distribution_mallows,
+                distribution_mallows,
                 distribution_pref,
                 distribution_rpc_pl,
                 distribution_rpc,
             ],
             model_names=[
                 "PlackettLuce",
-                # "MallowsModel",
+                "MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
@@ -1658,14 +1658,14 @@ if __name__ == "__main__":
         evaluate_calibration_full_rank_sub_k_top_k(
             distributions=[
                 distribution_pl,
-                # distribution_mallows,
+                distribution_mallows,
                 distribution_pref,
                 distribution_rpc_pl,
                 distribution_rpc,
             ],
             model_names=[
                 "PlackettLuce",
-                # "MallowsModel",
+                "MallowsModel",
                 "PreferenceModel",
                 "PlackettLuceRPC",
                 "RPC",
@@ -1697,7 +1697,7 @@ if __name__ == "__main__":
     #### Prepare Data for Visualization ####
     model_names = [
         "PlackettLuce",
-        # "MallowsModel",
+        "MallowsModel",
         "PreferenceModel",
         "PlackettLuceRPC",
         "RPC",
