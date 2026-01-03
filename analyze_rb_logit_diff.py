@@ -19,7 +19,7 @@ from pathlib import Path
 from huggingface_hub import HfFileSystem, hf_hub_download
 import numpy as np
 import torch
-
+from scipy.stats import kendalltau
 from cal_pref.utils import calculate_binary_ece
 
 
@@ -183,7 +183,7 @@ def compute_margins(scores_data: dict) -> tuple[float, float, int]:
 
 def compute_correlations(results: list[dict]) -> dict[str, tuple[float, float]]:
     # Compute Spearman correlation between ECE and Leaderboard rank, Factuality, Precise If, Math, Safety, Focus, Ties
-    from scipy.stats import spearmanr
+    from scipy.stats import kendalltau, spearmanr
 
     ece_ranks_list = [r["ece_score"] for r in results]
     leaderboard_ranks_list = [r["rank"] for r in results]
@@ -196,17 +196,17 @@ def compute_correlations(results: list[dict]) -> dict[str, tuple[float, float]]:
 
     # Compute Spearman correlations
     correlations = {
-        "Leaderboard": spearmanr(ece_ranks_list, leaderboard_ranks_list),
-        "Factuality": spearmanr(ece_ranks_list, factuality_ranks_list),
-        "Precise If": spearmanr(ece_ranks_list, precise_if_ranks_list),
-        "Math": spearmanr(ece_ranks_list, math_ranks_list),
-        "Safety": spearmanr(ece_ranks_list, safety_ranks_list),
-        "Focus": spearmanr(ece_ranks_list, focus_ranks_list),
-        "Ties": spearmanr(ece_ranks_list, ties_ranks_list),
+        "Leaderboard": kendalltau(ece_ranks_list, leaderboard_ranks_list),
+        "Factuality": kendalltau(ece_ranks_list, factuality_ranks_list),
+        "Precise If": kendalltau(ece_ranks_list, precise_if_ranks_list),
+        "Math": kendalltau(ece_ranks_list, math_ranks_list),
+        "Safety": kendalltau(ece_ranks_list, safety_ranks_list),
+        "Focus": kendalltau(ece_ranks_list, focus_ranks_list),
+        "Ties": kendalltau(ece_ranks_list, ties_ranks_list),
     }
     for key, (corr, pval) in correlations.items():
         print(
-            f"Spearman correlation between ECE and {key}: {corr:.4f} (p-value: {pval:.4f})"
+            f"Kendall tau correlation between ECE and {key}: {corr:.4f} (p-value: {pval:.4f})"
         )
     return correlations
 
@@ -1381,6 +1381,29 @@ def quantify_grouping_quality(
         fig.savefig(output_side_by_side_plot, dpi=200, bbox_inches="tight")
         print(f"Side-by-side plot written to {output_side_by_side_plot}")
 
+def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
+    """
+    Visualize raw ECE scores for top models.
+    
+    :param results: Description
+    :param top_k: Description
+    :param save_folder: Description
+    """
+    fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
+    sorted_results = sorted(results, key=lambda x: x["ece_score"])
+    top_models = sorted_results[:top_k]
+    model_names = [r["model"] for r in top_models]
+    raw_ece_scores = [r["raw_ece"] for r in top_models]
+    
+    ax.boxplot(raw_ece_scores, labels=model_names, vert=True)
+    ax.set_ylabel("Raw ECE Scores")
+    ax.set_title(f"Raw ECE Scores for Top {top_k} Models")
+    ax.tick_params(axis='x', rotation=45)
+    fig.savefig(
+        os.path.join(save_folder, f"raw_ece_scores_top_{top_k}.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1581,8 +1604,18 @@ def main():
         print(
             f"{r['rank']:<5} {r['model']:<50} {r['mean_margin']:<15.4f} {r['margin_to_mean']:<15.4f} {r['ece_score']:<15.4f} {ece_ranks[r['model']]:<10} {r['model_accuracy']:<10.4f}"
         )
-
     print("=" * 90)
+
+    # Compute Kendall Tau corelation between ECE rank and Leaderboard rank
+    leaderboard_ranks = [r["rank"] for r in results]
+    ece_ranks = [ece_ranks[r["model"]] for r in results]
+    kendall_tau, p_value = kendalltau(leaderboard_ranks, ece_ranks)
+    print(
+        f"\nKendall Tau correlation between Leaderboard rank and ECE rank: {kendall_tau:.4f} (p-value: {p_value:.4e})"
+    )
+    
+    # Visualize the raw_ece scores for the top_10 ece models
+    visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece")
 
     # Compute and visualize correlations
     save_folder = "rlhf_ece"
