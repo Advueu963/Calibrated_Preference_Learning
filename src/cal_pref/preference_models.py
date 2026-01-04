@@ -473,20 +473,32 @@ class MallowsModel(nn.Module):
         self.normalization_constant = self.compute_normalization_constant()
 
     def compute_distance(self, rank1: torch.Tensor):
-        """Compute distance where rank1 is ranks-per-item."""
+        """Compute distance where rank1 is ranks-per-item.
+        
+        :param rank1: torch.Tensor of shape (n_samples,n_items) representing ranks-per-item.
+        
+        
+        Returns:
+            distance (torch.tensor): Computed distance (n_samples,).
+        """
         if self.distance_metric == "kendall":
-            distance = 0
-            for i in range(self.n_items):
-                for j in range(i + 1, self.n_items):
-                    if (rank1[i] - rank1[j]) * (
-                        self.reference_ranks[i] - self.reference_ranks[j]
-                    ) < 0:
-                        distance += 1
+            # Vectorized implementation of Kendall tau distance.
+            rank1_1 = rank1.unsqueeze(2)  # shape (n_samples, n_items, 1)
+            rank1_2 = rank1.unsqueeze(1)  # shape (n_samples, 1, n_items)
+            ref_1 = self.reference_ranks.unsqueeze(0).unsqueeze(2)  # shape (1, n_items, 1)
+            ref_2 = self.reference_ranks.unsqueeze(0).unsqueeze(1)  # shape (1, 1, n_items)
+            rank1_1 = rank1_1.expand(-1, -1, self.n_items) # shape (n_samples, n_items, n_items)
+            rank1_2 = rank1_2.expand(-1, self.n_items, -1) # shape (n_samples, n_items, n_items)
+            ref_1 = ref_1.expand(rank1.shape[0], -1, self.n_items) # shape (n_samples, n_items, n_items)
+            ref_2 = ref_2.expand(rank1.shape[0], self.n_items, -1) # shape (n_samples, n_items, n_items) 
+            # Calculate discordant pairs of every combination of items
+            discordant_pairs = ((rank1_1 - rank1_2) * (ref_1 - ref_2)) < 0 # shape (n_samples, n_items, n_items)
+            # The entries on the diagonal are always False (i.e., not discordant), so we can ignore them.
+            distance = torch.sum(discordant_pairs, dim=(1, 2)) // 2 # each pair counted twice
             return distance
         else:
-            raise NotImplementedError(
-                f"Distance metric {self.distance_metric} not implemented."
-            )
+            raise NotImplementedError(f"Distance metric '{self.distance_metric}' not implemented.")
+
 
     def compute_normalization_constant(self):
         constant = 1.0
@@ -524,21 +536,34 @@ class MallowsModel(nn.Module):
         return self.reference_ranks.expand(x.shape[0], -1).long()
 
     def predict_ranking_distribution(self, x, restricted_rankings=None):
+        """Predicts the distribution over all rankings are only those provided in restriced_rankings.
+        As the Mallow's Model fits global parameters, can speed up the computation by pre-computing the distance to all rankings.
+
+        Args:
+            x (torch.tensor): The input data
+            restricted_rankings (list[tuple[int]], optional): The rankings/orderings best --> worst Items IDs we should restrict the computation to. Defaults to None.
+
+        Returns:
+            dict[tuple[int]]: The outputed distribution.
+        """
         if restricted_rankings is None:
             rankings = list(permutations(range(1, self.n_items + 1)))
         else:
             rankings = restricted_rankings
+        # Pre-compute distances to reference ranking
+        rankings = _order_to_ranks_tensor(
+            torch.tensor(rankings, device=self.reference_order.device), self.n_items
+        )
+        distances = self.compute_distance(rankings)
+        probs = self.normalization_constant * (self.dispersion**distances)
         distribution = {}
         for i in tqdm(
             range(len(rankings)), desc="Predicting ranking distribution Mallows"
         ):
-            rank = rankings[i]
-            order = tuple(rank)
-            rank_tensor = (
-                torch.tensor(order, device=x.device).unsqueeze(0).expand(x.shape[0], -1)
-            )
-            probs = self.predict_proba_ranking(x, rank_tensor)
-            distribution[order] = probs.detach()
+            order = tuple(
+                torch.argsort(rankings[i], dim=-1).cpu().numpy() + 1
+            )  # Convert ranks-per-item to ordering
+            distribution[order] = probs[i].repeat(int(x.shape[0]))
         return distribution
 
     @classmethod
