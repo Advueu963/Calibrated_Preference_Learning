@@ -1410,7 +1410,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name =  "iris" #args.dataset
+    dataset_name = args.dataset
     RANK_WEIGHTING = (
         args.rank_weighting
     )  # "95_prob_mass"  # Options: "uniform", "prevalence", "pred_mass", "top_10"
@@ -1589,6 +1589,7 @@ if __name__ == "__main__":
                 results["MallowsModel"][0],
                 results["PreferenceModel"][0],
                 results["PlackettLuceRPC"][0],
+                fold
             )
         )
 
@@ -1748,5 +1749,20 @@ if __name__ == "__main__":
     )
     top_full_rank_df.to_csv(
         f"{save_folder}topk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{RANK_WEIGHTING}_{DISCREPANCY}_{BIN_SPACING}.csv",
+        index=False,
+    )
+    # Save Kendall's Tau results
+    tau_df = pd.DataFrame(
+        res_tau_dist,
+        columns=[
+            "PlackettLuce_Tau",
+            "MallowsModel_Tau",
+            "PreferenceModel_Tau",
+            "PlackettLuceRPC_Tau",
+            "Fold_idx"
+        ],
+    )
+    tau_df.to_csv(
+        f"{save_folder}kendalls_tau_results_{dataset_name}.csv",
         index=False,
     )
