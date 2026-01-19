@@ -325,7 +325,7 @@ def _coerce_ranking_probabilities(
     )
 
 
-def filter_rankings_by_occurrence(y_true, y_pred_proba, full_order_true):
+def filter_rankings_by_occurrence(y_true, y_pred_proba, full_order_true, mode="95_prob_mass") -> tuple[torch.Tensor, dict]:
     """
     Filter out rankings from y_pred_proba and y_true which do not occur frequently enough in y_true.
     Parameters
@@ -355,13 +355,18 @@ def filter_rankings_by_occurrence(y_true, y_pred_proba, full_order_true):
     sorted_rankings = sorted(
         ranking_occurences.items(), key=lambda x: x[1], reverse=True
     )
-    cum_occurences = 0
-    selected_rankings = []
-    for ranking, count in sorted_rankings:
-        selected_rankings.append(ranking)
-        cum_occurences += count
-        if cum_occurences / total_occurences >= 0.95:
-            break
+    if mode == "95_prob_mass":
+        cum_occurences = 0
+        selected_rankings = []
+        for ranking, count in sorted_rankings:
+            selected_rankings.append(ranking)
+            cum_occurences += count
+            if cum_occurences / total_occurences >= 0.95:
+                break
+    elif mode == "top_10":
+        selected_rankings = [ranking for ranking, count in sorted_rankings[:10]]
+    else:
+        raise ValueError("Invalid mode for filtering rankings.")
     #print("Selected", round(len(selected_rankings) / len(ranking_occurences), 3)*100, "% of rankings covering (goal was 95%).")
 
     mask = torch.tensor(
@@ -916,7 +921,11 @@ def calculate_sub_k_full_rank_calibration(
 
     if rank_weighting == "95_prob_mass":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
-            y_true, y_pred_proba, full_order_true
+            y_true, y_pred_proba, full_order_true, mode="95_prob_mass"
+        )
+    elif rank_weighting == "top_10":
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true, mode="top_10"
         )
     
     possible_items_sets = list(combinations(items, k))
@@ -1108,7 +1117,11 @@ def calculate_top_k_full_rank_calibration(
 
     if rank_weighting == "95_prob_mass":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
-            y_true, y_pred_proba, full_order_true
+            y_true, y_pred_proba, full_order_true, mode="95_prob_mass"
+        )
+    elif rank_weighting == "top_10":
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true, mode="top_10"
         )
 
     if y_true.shape[1] >= 8:
@@ -1249,12 +1262,11 @@ def construct_sub_k_tensors(
     )
 
     # Build position matrix pos[r, item-1] = position (0=best) of item in ranking r.
-    try:
-        order = torch.tensor(
+
+    order = torch.tensor(
             ranking_list, device=device, dtype=torch.long
-        )  # (R, n_items)
-    except TypeError as e:
-        print("WTF?")
+    )  # (R, n_items)
+
     R = order.shape[0]
     pos = torch.empty((R, n_items), device=device, dtype=torch.long)
     pos.scatter_(
@@ -1326,7 +1338,11 @@ def calculate_sub_k_calibration(
 
     if rank_weighting == "95_prob_mass":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
-            y_true, y_pred_proba, full_order_true
+            y_true, y_pred_proba, full_order_true, mode="95_prob_mass"
+        )
+    elif rank_weighting == "top_10":
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true, mode="top_10"
         )
 
     if y_true.shape[1] >= 8:
@@ -1383,7 +1399,7 @@ def calculate_sub_k_calibration(
         r["weight_prevalence"] /= total_weight_prev
         r["weight_pred_mass"] /= total_weight_pred
 
-    if rank_weighting == "uniform" or rank_weighting == "95_prob_mass":
+    if rank_weighting in ["uniform","95_prob_mass","top_10"]:
         total_ece = np.mean([r["ece"] for r in sub_rankings_ece])
     elif rank_weighting == "prevalence":
         total_ece = np.sum(
@@ -1391,12 +1407,6 @@ def calculate_sub_k_calibration(
         )
     elif rank_weighting == "pred_mass":
         total_ece = np.sum([r["ece"] * r["weight_pred_mass"] for r in sub_rankings_ece])
-    elif rank_weighting == "most_confident":
-        # Sum only the sub-ranking with 5 the highest predicted mass
-        sorted_ece = list(
-            sorted(sub_rankings_ece, key=lambda x: x["weight_pred_mass"], reverse=True)
-        )
-        total_ece = sum(r["ece"] for r in sorted_ece[:5]) / 5.0
     else:
         raise ValueError(rank_weighting)
     return {"sub_rankings_ece": sub_rankings_ece, "total_ece": total_ece}
@@ -1555,7 +1565,11 @@ def calculate_top_k_calibration(
 
     if rank_weighting == "95_prob_mass":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
-            y_true, y_pred_proba, full_order_true
+            y_true, y_pred_proba, full_order_true, mode="95_prob_mass"
+        )
+    elif rank_weighting == "top_10":
+        y_true, y_pred_proba = filter_rankings_by_occurrence(
+            y_true, y_pred_proba, full_order_true, mode="top_10"
         )
 
     if y_true.shape[1] >= 8:
@@ -1598,7 +1612,7 @@ def calculate_top_k_calibration(
         r["weight_prevalence"] /= total_weight_prev
         r["weight_pred_mass"] /= total_weight_pred
 
-    if rank_weighting == "uniform":
+    if rank_weighting in ["uniform","95_prob_mass","top_10"]:
         total_ece = np.mean([r["ece"] for r in top_k_rankings_ece])
     elif rank_weighting == "prevalence":
         total_ece = np.sum(
@@ -1616,21 +1630,8 @@ def calculate_top_k_calibration(
             )
         )
         total_ece = sum(r["ece"] for r in sorted_ece[:5]) / 5.0
-    elif rank_weighting == "95_prob_mass":
-        # Sum only the sub-rankings which together account for 95% of the predicted mass
-        sorted_ece = list(
-            sorted(
-                top_k_rankings_ece, key=lambda x: x["weight_prevalence"], reverse=True
-            )
-        )
-        cum_mass = 0.0
-        total_ece = 0.0
-        for r in sorted_ece:
-            cum_mass += r["weight_prevalence"]
-            total_ece += r["ece"]
-            if cum_mass >= 0.95:
-                break
-        total_ece /= len(sorted_ece)
+    else:
+        raise ValueError(rank_weighting)
 
     return {"top_k_rankings_ece": top_k_rankings_ece, "total_ece": total_ece}
 
