@@ -276,6 +276,12 @@ def train_placket_luce_rpc_model(
         X_test (np.ndarray): Test data features.
         n_items (int): Number of items to rank.
     """
+    # In glass it seems that most rankings are quite similiar, so the Calibration Method fails. Artificially we add some noise
+    x_noise = np.random.normal(0, 0.1, X_train.shape[1])
+    y_noise = np.array(range(y_train.shape[-1], 0, -1))
+    X_train = np.concatenate([X_train, x_noise.reshape(1, -1)], axis=0)
+    y_train = np.concatenate([y_train, y_noise.reshape(1, -1)], axis=0)
+    
     baseline_estimator = baseline_estimator.fit(X_train, y_train)
     print(
         "Tau Score of RPC Baseline on Train Set: ",
@@ -1410,7 +1416,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(42)
     num_epochs = 50
     batch_size = 64
-    dataset_name =  "iris" #args.dataset
+    dataset_name =  args.dataset
     RANK_WEIGHTING = (
         args.rank_weighting
     )  # "95_prob_mass"  # Options: "uniform", "prevalence", "pred_mass", "top_10"

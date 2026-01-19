@@ -29,6 +29,7 @@ dependencies = [
     "numpy>=2.3.3",
     "pandas>=2.3.2",
     "pytest>=9.0.1",
+    "scienceplots>=2.2.0",
     "scikit-learn>=1.7.2",
     "scikit-lr",
     "scipy>=1.16.2",
