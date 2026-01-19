@@ -290,6 +290,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pytest" },
+    { name = "scienceplots" },
     { name = "scikit-learn" },
     { name = "scikit-lr" },
     { name = "scipy" },
@@ -311,6 +312,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.3.3" },
     { name = "pandas", specifier = ">=2.3.2" },
     { name = "pytest", specifier = ">=9.0.1" },
+    { name = "scienceplots", specifier = ">=2.2.0" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
     { name = "scikit-lr", directory = "scikit-lr" },
     { name = "scipy", specifier = ">=1.16.2" },
@@ -2864,6 +2866,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/24/e3e72d265121e00b063aef3e3501e5b2473cf1b23511d56e529531acf01e/rpds_py-0.27.1-pp311-pypy311_pp73-musllinux_1_2_aarch64.whl", hash = "sha256:94c44ee01fd21c9058f124d2d4f0c9dc7634bec93cd4b38eefc385dabe71acbf", size = 560003, upload-time = "2025-08-27T12:16:08.06Z" },
     { url = "https://files.pythonhosted.org/packages/26/ca/f5a344c534214cc2d41118c0699fffbdc2c1bc7046f2a2b9609765ab9c92/rpds_py-0.27.1-pp311-pypy311_pp73-musllinux_1_2_i686.whl", hash = "sha256:df8b74962e35c9249425d90144e721eed198e6555a0e22a563d29fe4486b51f6", size = 590482, upload-time = "2025-08-27T12:16:10.137Z" },
     { url = "https://files.pythonhosted.org/packages/ce/08/4349bdd5c64d9d193c360aa9db89adeee6f6682ab8825dca0a3f535f434f/rpds_py-0.27.1-pp311-pypy311_pp73-musllinux_1_2_x86_64.whl", hash = "sha256:dc23e6820e3b40847e2f4a7726462ba0cf53089512abe9ee16318c366494c17a", size = 556523, upload-time = "2025-08-27T12:16:12.188Z" },
+]
+
+[[package]]
+name = "scienceplots"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9b/5c/2617c08c046d9e5bd6034001efa0b58fcfa46fc8090c0c870370a63270e8/scienceplots-2.2.0.tar.gz", hash = "sha256:240bbc081fdf3a4025e0e4491c946b294ed5041f8c1c7f09f0e6071558aa59cc", size = 14375, upload-time = "2025-11-20T01:41:06.998Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/23/fbb25276057e99c25b9575df2b56698a68be28335b38fc81a63e3b82c638/scienceplots-2.2.0-py3-none-any.whl", hash = "sha256:ab0c0bec3096e1e16adb212d4752bbf624bd31e9d04191ea79de611d00ce88f0", size = 30341, upload-time = "2025-11-20T01:41:06.079Z" },
 ]
 
 [[package]]

@@ -22,3 +22,6 @@ cache_reward_bench/
 *.cmd
 *.out
 *.sh
+
+# C++ files
+*.cpp
