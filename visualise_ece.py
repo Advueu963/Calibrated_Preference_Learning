@@ -1,8 +1,11 @@
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import scienceplots
+
 plt.style.use("science")
+
 
 def _style_boxplot_axis(ax, title, ylabel, xlabel="", y_upper=None):
     """Apply consistent styling to single-axis ECE boxplots."""
@@ -94,7 +97,8 @@ def visualize_ece_results(
     )
     fig.tight_layout()
     fig.savefig(
-        f"{save_folder}subk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.pdf"
+        f"{save_folder}subk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.png",
+        dpi=300,
     )
 
     print("Visualizing Sub-k Full-Rank ECE...")
@@ -148,7 +152,8 @@ def visualize_ece_results(
     )
     fig.tight_layout()
     fig.savefig(
-        f"{save_folder}subk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank_{rank_weighting}_{discrepancy}_{bin_spacing}.pdf"
+        f"{save_folder}subk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank_{rank_weighting}_{discrepancy}_{bin_spacing}.png",
+        dpi=300,
     )
 
     print("Visualizing Top-k Rank-wise ECE...")
@@ -200,13 +205,14 @@ def visualize_ece_results(
     )
     fig.tight_layout(pad=2.0)
     fig.savefig(
-        f"{save_folder}topk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.pdf"
+        f"{save_folder}topk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.png",
+        dpi=300,
     )
 
     print("Visualizing Top-k Full-Rank ECE...")
     fig, ax = plt.subplots(figsize=(11, 6))
     fig.patch.set_facecolor("white")
-    
+
     sns.boxplot(
         data=top_full_rank_df,
         x="k_label",
@@ -255,7 +261,8 @@ def visualize_ece_results(
     )
     fig.tight_layout()
     fig.savefig(
-        f"{save_folder}topk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank_{rank_weighting}_{discrepancy}_{bin_spacing}.pdf"
+        f"{save_folder}topk_ece_grouped_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_full_rank_{rank_weighting}_{discrepancy}_{bin_spacing}.png",
+        dpi=300,
     )
 
     print("Visualizing Sub-k Rankwise ECE vs k with Error Bars...")
@@ -376,58 +383,75 @@ def visualize_ece_results(
 
     fig.tight_layout()
     fig.savefig(
-        f"{save_folder}ece_vs_k_errorbars_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.pdf"
+        f"{save_folder}ece_vs_k_errorbars_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.png",
+        dpi=300,
     )
 
 
 # Hard coding the proportion used to save the .csv files through experiment.calibration
 dataset_to_proportion = {
     "political": 1.0,
+    "glass": 1.0,
+    "authorship": 1.0,
+    "iris": 1.0,
+    # "libras": 0.0,
+    "segment": 1.0,
+    "vehicle": 1.0,
+    "vowel": 0.0,
+    "wine": 1.0,
+    "yeast": 0.0,
     "movies": 0.0,
 }
 
 if __name__ == "__main__":
     ## Load the movies dataset ECE results
-    dataset_name = "political"
-    k_values_sub_k = [2, 3, 4, 5]
-    k_values_top_k = [1, 2, 3, 4]
-    rank_weighting = "95_prob_mass"
-    discrepancy = "abs"
-    bin_spacing = "linear"
-    proportion_of_considered_rankings = dataset_to_proportion[dataset_name]
-    save_folder = f"results/{dataset_name}/"
-    sub_df = pd.read_csv(
-        f"{save_folder}subk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv"
-    )
-    top_df = pd.read_csv(
-        f"{save_folder}topk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv"
-    )
-    sub_full_rank_df = pd.read_csv(
-        f"{save_folder}subk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv",
-    )
-    top_full_rank_df = pd.read_csv(
-        f"{save_folder}topk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv",
-    )
-    ## Filter the dataframes to only consider the desired k values
-    sub_df = sub_df[sub_df["k"].isin(k_values_sub_k)]
-    top_df = top_df[top_df["k"].isin(k_values_top_k)]
-    sub_full_rank_df = sub_full_rank_df[sub_full_rank_df["k"].isin(k_values_sub_k)]
-    top_full_rank_df = top_full_rank_df[top_full_rank_df["k"].isin(k_values_top_k)]
+    for (
+        dataset_name,
+        proportion_of_considered_rankings,
+    ) in dataset_to_proportion.items():
 
-    ## Visualize ECE results for different k values
-    save_folder = "results/improved_plots/"
-    visualize_ece_results(
-        dataset_name=dataset_name,
-        k_values_sub_k=k_values_sub_k,
-        k_values_top_k=k_values_top_k,
-        sub_df=sub_df,
-        top_df=top_df,
-        sub_full_rank_df=sub_full_rank_df,
-        top_full_rank_df=top_full_rank_df,
-        proportion_of_considered_rankings_in_ece=proportion_of_considered_rankings,
-        rank_weighting=rank_weighting,
-        discrepancy=discrepancy,
-        bin_spacing=bin_spacing,
-        save_folder=save_folder,
-        log_scale=False
-    )
+        rank_weighting = "95_prob_mass"
+        discrepancy = "abs"
+        bin_spacing = "linear"
+        proportion_of_considered_rankings = dataset_to_proportion[dataset_name]
+        save_folder = f"results/{dataset_name}/"
+        sub_df = pd.read_csv(
+            f"{save_folder}subk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv"
+        )
+        top_df = pd.read_csv(
+            f"{save_folder}topk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv"
+        )
+        sub_full_rank_df = pd.read_csv(
+            f"{save_folder}subk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv",
+        )
+        top_full_rank_df = pd.read_csv(
+            f"{save_folder}topk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings, 2)}_{rank_weighting}_{discrepancy}_{bin_spacing}.csv",
+        )
+        
+        
+        k_values_sub_k = sub_df["k"].unique().tolist() #[2,3,4,5]
+        k_values_top_k = top_df["k"].unique().tolist() # [1,2,3,4]
+        ## Filter the dataframes to only consider the desired k values
+        # sub_df = sub_df[sub_df["k"].isin(k_values_sub_k)]
+        # top_df = top_df[top_df["k"].isin(k_values_top_k)]
+        # sub_full_rank_df = sub_full_rank_df[sub_full_rank_df["k"].isin(k_values_sub_k)]
+        # top_full_rank_df = top_full_rank_df[top_full_rank_df["k"].isin(k_values_top_k)]
+
+        ## Visualize ECE results for different k values
+        save_folder = f"results/improved_plots/{dataset_name}/"
+        os.makedirs(save_folder, exist_ok=True)
+        visualize_ece_results(
+            dataset_name=dataset_name,
+            k_values_sub_k=k_values_sub_k,
+            k_values_top_k=k_values_top_k,
+            sub_df=sub_df,
+            top_df=top_df,
+            sub_full_rank_df=sub_full_rank_df,
+            top_full_rank_df=top_full_rank_df,
+            proportion_of_considered_rankings_in_ece=proportion_of_considered_rankings,
+            rank_weighting=rank_weighting,
+            discrepancy=discrepancy,
+            bin_spacing=bin_spacing,
+            save_folder=save_folder,
+            log_scale=False,
+        )

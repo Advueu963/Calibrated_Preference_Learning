@@ -55,8 +55,40 @@ parser.add_argument(
 parser.add_argument(
     "--rank_weighting",
     type=str,
-    default="uniform",
-    help='Rank weighting scheme for ECE calculation. Options are "uniform", "prevalence", "pred_mass", and "most_confident".',
+    default=None,
+    help=(
+        "[Legacy] Rank weighting scheme or legacy method selector. "
+        "For new usage, prefer --ece_method/--filter_mode/--agg_weighting. "
+        "Options include 'uniform', 'prevalence', 'pred_mass', 'most_confident', '95_prob_mass', 'top_10', "
+        "and legacy method selectors like 'tace@..'/'tva@..'."
+    ),
+)
+parser.add_argument(
+    "--ece_method",
+    type=str,
+    default=None,
+    help=(
+        "ECE method to use (independent of filtering/aggregation). "
+        "Examples: 'tace@0.01@10', 'tva@0.01@20', 'topl_tace@50@0.01@10@1'."
+    ),
+)
+parser.add_argument(
+    "--filter_mode",
+    type=str,
+    default=None,
+    help=(
+        "Optional filtering mode applied to the predicted distribution before marginalization. "
+        "Examples: '95_prob_mass', 'top_10', 'filter_topl@50@1'."
+    ),
+)
+parser.add_argument(
+    "--agg_weighting",
+    type=str,
+    default=None,
+    help=(
+        "How to aggregate per-event ECEs (when applicable). "
+        "Examples: 'uniform', 'prevalence', 'pred_mass', 'most_confident'."
+    ),
 )
 parser.add_argument(
     "--discrepancy",
@@ -281,7 +313,7 @@ def train_placket_luce_rpc_model(
     y_noise = np.array(range(y_train.shape[-1], 0, -1))
     X_train = np.concatenate([X_train, x_noise.reshape(1, -1)], axis=0)
     y_train = np.concatenate([y_train, y_noise.reshape(1, -1)], axis=0)
-    
+
     baseline_estimator = baseline_estimator.fit(X_train, y_train)
     print(
         "Tau Score of RPC Baseline on Train Set: ",
@@ -751,6 +783,9 @@ def evaluate_calibration_rankwise_sub_k_top_k(
     rank_weighting="uniform",
     discrepancy="abs",
     bin_spacing="linear",
+    ece_method: str | None = None,
+    filter_mode: str | None = None,
+    agg_weighting: str | None = None,
 ):
     """Evaluate rank-wise calibration for sub-k and top-k.
 
@@ -781,6 +816,9 @@ def evaluate_calibration_rankwise_sub_k_top_k(
                         rank_weighting=rank_weighting,
                         discrepancy=discrepancy,
                         bin_spacing=bin_spacing,
+                        ece_method=ece_method,
+                        filter_mode=filter_mode,
+                        agg_weighting=agg_weighting,
                     )
             else:
                 # For all other models we just simply calculate the sub-k calibration
@@ -793,6 +831,9 @@ def evaluate_calibration_rankwise_sub_k_top_k(
                     rank_weighting=rank_weighting,
                     discrepancy=discrepancy,
                     bin_spacing=bin_spacing,
+                    ece_method=ece_method,
+                    filter_mode=filter_mode,
+                    agg_weighting=agg_weighting,
                 )
             rankwise_sub_k_eces[k][-1].append(ece_sub_k["total_ece"])
 
@@ -808,6 +849,9 @@ def evaluate_calibration_rankwise_sub_k_top_k(
                     rank_weighting=rank_weighting,
                     discrepancy=discrepancy,
                     bin_spacing=bin_spacing,
+                    ece_method=ece_method,
+                    filter_mode=filter_mode,
+                    agg_weighting=agg_weighting,
                 )
             rankwise_top_k_eces[k][-1].append(ece_top_k["total_ece"])
     for k in possible_k_sub_k:
@@ -1417,9 +1461,23 @@ if __name__ == "__main__":
     num_epochs = 50
     batch_size = 64
     dataset_name = args.dataset
-    RANK_WEIGHTING = (
-        args.rank_weighting
-    )  # "95_prob_mass"  # Options: "uniform", "prevalence", "pred_mass", "top_10"
+    LEGACY_RANK_WEIGHTING = args.rank_weighting
+    ECE_METHOD = args.ece_method
+    FILTER_MODE = args.filter_mode
+    AGG_WEIGHTING = args.agg_weighting
+
+    if any(v is not None for v in (ECE_METHOD, FILTER_MODE, AGG_WEIGHTING)):
+        CALIB_TAG = f"ece={ECE_METHOD}_filter={FILTER_MODE}_agg={AGG_WEIGHTING}"
+    else:
+        CALIB_TAG = LEGACY_RANK_WEIGHTING
+
+    # Full-rank calibration currently only supports occurrence-based filtering.
+    if FILTER_MODE in ("95_prob_mass", "top_10"):
+        FULL_RANK_WEIGHTING = FILTER_MODE
+    elif LEGACY_RANK_WEIGHTING in ("95_prob_mass", "top_10"):
+        FULL_RANK_WEIGHTING = LEGACY_RANK_WEIGHTING
+    else:
+        FULL_RANK_WEIGHTING = None
     DISCREPANCY = (
         args.discrepancy
     )  # "abs"  # Options: "abs", "jeff", "log_ratio", "rel_p", "rel_q", "kl"
@@ -1595,7 +1653,7 @@ if __name__ == "__main__":
                 results["MallowsModel"][0],
                 results["PreferenceModel"][0],
                 results["PlackettLuceRPC"][0],
-                fold
+                fold,
             )
         )
 
@@ -1657,9 +1715,12 @@ if __name__ == "__main__":
             possible_k_top_k=POSSIBLE_K_TOP_K,
             rankwise_sub_k_eces=rankwise_sub_k_eces,
             rankwise_top_k_eces=rankwise_top_k_eces,
-            rank_weighting=RANK_WEIGHTING,
+            rank_weighting=LEGACY_RANK_WEIGHTING,
             discrepancy=DISCREPANCY,
             bin_spacing=BIN_SPACING,
+            ece_method=ECE_METHOD,
+            filter_mode=FILTER_MODE,
+            agg_weighting=AGG_WEIGHTING,
         )
         print("Evaluating Full-Rank Sub-k and Top-k ECE...")
         evaluate_calibration_full_rank_sub_k_top_k(
@@ -1684,7 +1745,7 @@ if __name__ == "__main__":
             rankwise_full_rank_top_k_eces=rankwise_full_rank_top_k_eces,
             h=1,
             p_norm=1,
-            rank_weighting=RANK_WEIGHTING,
+            rank_weighting=FULL_RANK_WEIGHTING,
         )
 
         print(f"Completed fold {fold + 1}/{n_folds}\n")
@@ -1734,7 +1795,7 @@ if __name__ == "__main__":
         top_full_rank_df,
         proportion_of_considered_rankings_in_ece=proportion_of_considered_rankings_in_ece,
         save_folder=save_folder,
-        rank_weighting=RANK_WEIGHTING,
+        rank_weighting=CALIB_TAG,
         discrepancy=DISCREPANCY,
         bin_spacing=BIN_SPACING,
         log_scale=False,
@@ -1742,19 +1803,19 @@ if __name__ == "__main__":
 
     # Save the ECE results to CSV files
     sub_df.to_csv(
-        f"{save_folder}subk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{RANK_WEIGHTING}_{DISCREPANCY}_{BIN_SPACING}.csv",
+        f"{save_folder}subk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{CALIB_TAG}_{DISCREPANCY}_{BIN_SPACING}.csv",
         index=False,
     )
     top_df.to_csv(
-        f"{save_folder}topk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{RANK_WEIGHTING}_{DISCREPANCY}_{BIN_SPACING}.csv",
+        f"{save_folder}topk_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{CALIB_TAG}_{DISCREPANCY}_{BIN_SPACING}.csv",
         index=False,
     )
     sub_full_rank_df.to_csv(
-        f"{save_folder}subk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{RANK_WEIGHTING}_{DISCREPANCY}_{BIN_SPACING}.csv",
+        f"{save_folder}subk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{FULL_RANK_WEIGHTING}_{DISCREPANCY}_{BIN_SPACING}.csv",
         index=False,
     )
     top_full_rank_df.to_csv(
-        f"{save_folder}topk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{RANK_WEIGHTING}_{DISCREPANCY}_{BIN_SPACING}.csv",
+        f"{save_folder}topk_full_rank_ece_results_{dataset_name}_{round(proportion_of_considered_rankings_in_ece, 2)}_{FULL_RANK_WEIGHTING}_{DISCREPANCY}_{BIN_SPACING}.csv",
         index=False,
     )
     # Save Kendall's Tau results
@@ -1765,7 +1826,7 @@ if __name__ == "__main__":
             "MallowsModel_Tau",
             "PreferenceModel_Tau",
             "PlackettLuceRPC_Tau",
-            "Fold_idx"
+            "Fold_idx",
         ],
     )
     tau_df.to_csv(

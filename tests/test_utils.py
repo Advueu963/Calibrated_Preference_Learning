@@ -15,6 +15,7 @@ from cal_pref.utils import (
     calculate_sub_k_calibration,
     calculate_top_k_calibration,
     calculate_sub_k_full_rank_calibration,
+    thresholded_adaptive_calibration_error_torch,
 )
 
 
@@ -393,6 +394,43 @@ def test_sub_k_full_rank_calibration():
     )
 
 
+def test_tace_zero_for_perfect_one_hot():
+    # Perfectly calibrated deterministic predictions should have TACE ~= 0.
+    labels = torch.tensor([0, 1, 2, 1, 0], dtype=torch.long)
+    probs = torch.nn.functional.one_hot(labels, num_classes=3).float()
+    out = thresholded_adaptive_calibration_error_torch(
+        probs, labels, n_bins=3, threshold=0.01
+    )
+    assert abs(float(out["ece"].item())) < 1e-8
+
+
+def test_tace_integration_via_rank_weighting():
+    # TACE is used for binary sub-k/top-k calibration (not the full-rank kernel methods).
+    orderings = torch.tensor(
+        [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
+        dtype=torch.long,
+    )
+    rankings = _order_to_ranks(orderings)
+    ranking_to_prob = {
+        (1, 2, 3): [1 / 6] * len(rankings),
+        (1, 3, 2): [1 / 6] * len(rankings),
+        (2, 1, 3): [1 / 6] * len(rankings),
+        (2, 3, 1): [1 / 6] * len(rankings),
+        (3, 1, 2): [1 / 6] * len(rankings),
+        (3, 2, 1): [1 / 6] * len(rankings),
+    }
+
+    results = calculate_sub_k_calibration(
+        items=[1, 2, 3],
+        y_true=rankings,
+        y_pred_proba=ranking_to_prob,
+        k=2,
+        rank_weighting="tace@0.0@10",
+    )
+    assert np.isfinite(results["total_ece"])
+    assert 0.0 <= float(results["total_ece"]) <= 1.0
+
+
 #####################################
 # Test Top-k Full Rank Calibration #
 ###################################
@@ -463,6 +501,160 @@ def test_top_k_full_rank_calibration():
     total_ece = results["total_ece"]
     expected_ece = 0.0  # This example is top-k fully calibrated
     assert abs(total_ece - expected_ece) < 1e-6
+
+
+def test_top_k_calibration_tva_runs():
+    orderings = torch.tensor(
+        [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
+        dtype=torch.long,
+    )
+    rankings = _order_to_ranks(orderings)
+    ranking_to_prob = {
+        (1, 2, 3): [1 / 6] * len(rankings),
+        (1, 3, 2): [1 / 6] * len(rankings),
+        (2, 1, 3): [1 / 6] * len(rankings),
+        (2, 3, 1): [1 / 6] * len(rankings),
+        (3, 1, 2): [1 / 6] * len(rankings),
+        (3, 2, 1): [1 / 6] * len(rankings),
+    }
+    out = calculate_top_k_calibration(
+        items=[1, 2, 3],
+        y_true=rankings,
+        y_pred_proba=ranking_to_prob,
+        k=2,
+        rank_weighting="tva@0.0@10",
+    )
+    assert np.isfinite(float(out["total_ece"]))
+    assert 0.0 <= float(out["total_ece"]) <= 1.0
+
+
+def test_top_k_calibration_tva_split_args_runs():
+    orderings = torch.tensor(
+        [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
+        dtype=torch.long,
+    )
+    rankings = _order_to_ranks(orderings)
+    ranking_to_prob = {
+        (1, 2, 3): [1 / 6] * len(rankings),
+        (1, 3, 2): [1 / 6] * len(rankings),
+        (2, 1, 3): [1 / 6] * len(rankings),
+        (2, 3, 1): [1 / 6] * len(rankings),
+        (3, 1, 2): [1 / 6] * len(rankings),
+        (3, 2, 1): [1 / 6] * len(rankings),
+    }
+    out = calculate_top_k_calibration(
+        items=[1, 2, 3],
+        y_true=rankings,
+        y_pred_proba=ranking_to_prob,
+        k=2,
+        ece_method="tva@0.0@10",
+        filter_mode=None,
+        agg_weighting="uniform",
+    )
+    assert np.isfinite(float(out["total_ece"]))
+    assert 0.0 <= float(out["total_ece"]) <= 1.0
+
+
+def test_top_k_calibration_topl_tace_runs():
+    orderings = torch.tensor(
+        [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
+        dtype=torch.long,
+    )
+    rankings = _order_to_ranks(orderings)
+    ranking_to_prob = {
+        (1, 2, 3): [1 / 6] * len(rankings),
+        (1, 3, 2): [1 / 6] * len(rankings),
+        (2, 1, 3): [1 / 6] * len(rankings),
+        (2, 3, 1): [1 / 6] * len(rankings),
+        (3, 1, 2): [1 / 6] * len(rankings),
+        (3, 2, 1): [1 / 6] * len(rankings),
+    }
+    out = calculate_top_k_calibration(
+        items=[1, 2, 3],
+        y_true=rankings,
+        y_pred_proba=ranking_to_prob,
+        k=2,
+        rank_weighting="topl_tace@2@0.0@5@1",
+    )
+    assert np.isfinite(float(out["total_ece"]))
+    assert 0.0 <= float(out["total_ece"]) <= 1.0
+
+
+def test_sub_k_calibration_tva_runs():
+    orderings = torch.tensor(
+        [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
+        dtype=torch.long,
+    )
+    rankings = _order_to_ranks(orderings)
+    ranking_to_prob = {
+        (1, 2, 3): [1 / 6] * len(rankings),
+        (1, 3, 2): [1 / 6] * len(rankings),
+        (2, 1, 3): [1 / 6] * len(rankings),
+        (2, 3, 1): [1 / 6] * len(rankings),
+        (3, 1, 2): [1 / 6] * len(rankings),
+        (3, 2, 1): [1 / 6] * len(rankings),
+    }
+    out = calculate_sub_k_calibration(
+        items=[1, 2, 3],
+        y_true=rankings,
+        y_pred_proba=ranking_to_prob,
+        k=2,
+        rank_weighting="tva@0.0@10",
+    )
+    assert np.isfinite(float(out["total_ece"]))
+    assert 0.0 <= float(out["total_ece"]) <= 1.0
+
+
+def test_sub_k_calibration_filter_topl_runs():
+    orderings = torch.tensor(
+        [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
+        dtype=torch.long,
+    )
+    rankings = _order_to_ranks(orderings)
+    ranking_to_prob = {
+        (1, 2, 3): [1 / 6] * len(rankings),
+        (1, 3, 2): [1 / 6] * len(rankings),
+        (2, 1, 3): [1 / 6] * len(rankings),
+        (2, 3, 1): [1 / 6] * len(rankings),
+        (3, 1, 2): [1 / 6] * len(rankings),
+        (3, 2, 1): [1 / 6] * len(rankings),
+    }
+    out = calculate_sub_k_calibration(
+        items=[1, 2, 3],
+        y_true=rankings,
+        y_pred_proba=ranking_to_prob,
+        k=2,
+        ece_method="tace@0.0@10",
+        filter_mode="filter_topl@2@0",
+        agg_weighting="uniform",
+    )
+    assert np.isfinite(float(out["total_ece"]))
+    assert 0.0 <= float(out["total_ece"]) <= 1.0
+
+
+def test_top_k_calibration_tace_runs():
+    orderings = torch.tensor(
+        [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]],
+        dtype=torch.long,
+    )
+    rankings = _order_to_ranks(orderings)
+    ranking_to_prob = {
+        (1, 2, 3): [1 / 6] * len(rankings),
+        (1, 3, 2): [1 / 6] * len(rankings),
+        (2, 1, 3): [1 / 6] * len(rankings),
+        (2, 3, 1): [1 / 6] * len(rankings),
+        (3, 1, 2): [1 / 6] * len(rankings),
+        (3, 2, 1): [1 / 6] * len(rankings),
+    }
+    results = calculate_top_k_calibration(
+        items=[1, 2, 3],
+        y_true=rankings,
+        y_pred_proba=ranking_to_prob,
+        k=1,
+        rank_weighting="tace@0.0@10",
+    )
+    assert np.isfinite(results["total_ece"])
+    assert 0.0 <= float(results["total_ece"]) <= 1.0
 
 
 def test_from_bradley_terry_to_plackett_luce():

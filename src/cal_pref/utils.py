@@ -325,7 +325,9 @@ def _coerce_ranking_probabilities(
     )
 
 
-def filter_rankings_by_occurrence(y_true, y_pred_proba, full_order_true, mode="95_prob_mass") -> tuple[torch.Tensor, dict]:
+def filter_rankings_by_occurrence(
+    y_true, y_pred_proba, full_order_true, mode="95_prob_mass"
+) -> tuple[torch.Tensor, dict]:
     """
     Filter out rankings from y_pred_proba and y_true which do not occur frequently enough in y_true.
     Parameters
@@ -367,7 +369,7 @@ def filter_rankings_by_occurrence(y_true, y_pred_proba, full_order_true, mode="9
         selected_rankings = [ranking for ranking, count in sorted_rankings[:10]]
     else:
         raise ValueError("Invalid mode for filtering rankings.")
-    #print("Selected", round(len(selected_rankings) / len(ranking_occurences), 3)*100, "% of rankings covering (goal was 95%).")
+    # print("Selected", round(len(selected_rankings) / len(ranking_occurences), 3)*100, "% of rankings covering (goal was 95%).")
 
     mask = torch.tensor(
         [tuple(order.tolist()) in selected_rankings for order in full_order_true]
@@ -455,6 +457,564 @@ def calculate_binary_ece_general(
         ece += (cnt / n) * d
 
     return float(ece)
+
+
+def _parse_tace_rank_weighting_spec(spec: str) -> tuple[float, int]:
+    """Parse rank_weighting spec for TACE.
+
+    Supported forms:
+    - "tace" -> threshold=0.01, n_bins=10
+    - "tace@<threshold>" -> n_bins=10
+    - "tace@<threshold>@<n_bins>"
+
+    Returns:
+        (threshold, n_bins)
+    """
+
+    if spec == "tace":
+        return 0.01, 10
+    if not spec.startswith("tace@"):
+        raise ValueError(
+            "Invalid TACE spec. Use 'tace' or 'tace@<threshold>' or 'tace@<threshold>@<n_bins>'."
+        )
+    parts = spec.split("@")
+    if len(parts) not in (2, 3):
+        raise ValueError(
+            "Invalid TACE spec. Use 'tace' or 'tace@<threshold>' or 'tace@<threshold>@<n_bins>'."
+        )
+    try:
+        threshold = float(parts[1])
+    except Exception as e:
+        raise ValueError(f"Invalid TACE threshold: {parts[1]!r}") from e
+    if threshold < 0.0 or threshold > 1.0:
+        raise ValueError("TACE threshold must be in [0, 1].")
+
+    n_bins = 10
+    if len(parts) == 3:
+        try:
+            n_bins = int(parts[2])
+        except Exception as e:
+            raise ValueError(f"Invalid TACE n_bins: {parts[2]!r}") from e
+    if n_bins <= 0:
+        raise ValueError("TACE n_bins must be a positive integer.")
+    return threshold, n_bins
+
+
+def _parse_tva_rank_weighting_spec(spec: str) -> tuple[float, int]:
+    """Parse rank_weighting spec for TvA calibration.
+
+    Supported forms:
+    - "tva" -> threshold=0.0, n_bins=10
+    - "tva@<n_bins>" -> threshold=0.0
+    - "tva@<threshold>@<n_bins>"
+
+    Returns:
+        (threshold, n_bins)
+
+    Notes:
+        TvA here refers to a *single* binary calibration problem per sample:
+        correctness of the model's top prediction vs its confidence.
+        We still use equal-frequency bins (TACE-style binning) for stability.
+    """
+
+    if spec == "tva":
+        return 0.0, 10
+    if not spec.startswith("tva@"):
+        raise ValueError(
+            "Invalid TvA spec. Use 'tva' or 'tva@<n_bins>' or 'tva@<threshold>@<n_bins>'."
+        )
+    parts = spec.split("@")
+    if len(parts) == 2:
+        # tva@<n_bins>
+        try:
+            n_bins = int(parts[1])
+        except Exception as e:
+            raise ValueError(f"Invalid TvA n_bins: {parts[1]!r}") from e
+        if n_bins <= 0:
+            raise ValueError("TvA n_bins must be a positive integer.")
+        return 0.0, n_bins
+    if len(parts) == 3:
+        # tva@<threshold>@<n_bins>
+        try:
+            threshold = float(parts[1])
+        except Exception as e:
+            raise ValueError(f"Invalid TvA threshold: {parts[1]!r}") from e
+        if threshold < 0.0 or threshold > 1.0:
+            raise ValueError("TvA threshold must be in [0, 1].")
+        try:
+            n_bins = int(parts[2])
+        except Exception as e:
+            raise ValueError(f"Invalid TvA n_bins: {parts[2]!r}") from e
+        if n_bins <= 0:
+            raise ValueError("TvA n_bins must be a positive integer.")
+        return threshold, n_bins
+    raise ValueError(
+        "Invalid TvA spec. Use 'tva' or 'tva@<n_bins>' or 'tva@<threshold>@<n_bins>'."
+    )
+
+
+def _parse_topl_tace_rank_weighting_spec(spec: str) -> tuple[int, float, int, bool]:
+    """Parse rank_weighting spec for top-L truncated distribution calibration.
+
+    Supported forms:
+    - "topl_tace@<L>" -> threshold=0.01, n_bins=10, include_true=True
+    - "topl_tace@<L>@<threshold>@<n_bins>" -> include_true=True
+    - "topl_tace@<L>@<threshold>@<n_bins>@<include_true>" where include_true is 0/1
+
+    Returns:
+        (L, threshold, n_bins, include_true)
+    """
+
+    if not spec.startswith("topl_tace@"):
+        raise ValueError(
+            "Invalid top-L TACE spec. Use 'topl_tace@<L>' or 'topl_tace@<L>@<threshold>@<n_bins>' or add '@<include_true>'."
+        )
+    parts = spec.split("@")
+    if len(parts) not in (2, 4, 5):
+        raise ValueError(
+            "Invalid top-L TACE spec. Use 'topl_tace@<L>' or 'topl_tace@<L>@<threshold>@<n_bins>' or add '@<include_true>'."
+        )
+    try:
+        L = int(parts[1])
+    except Exception as e:
+        raise ValueError(f"Invalid top-L value: {parts[1]!r}") from e
+    if L <= 0:
+        raise ValueError("top-L must be a positive integer.")
+
+    threshold = 0.01
+    n_bins = 10
+    include_true = True
+    if len(parts) >= 4:
+        try:
+            threshold = float(parts[2])
+        except Exception as e:
+            raise ValueError(f"Invalid top-L TACE threshold: {parts[2]!r}") from e
+        if threshold < 0.0 or threshold > 1.0:
+            raise ValueError("top-L TACE threshold must be in [0, 1].")
+        try:
+            n_bins = int(parts[3])
+        except Exception as e:
+            raise ValueError(f"Invalid top-L TACE n_bins: {parts[3]!r}") from e
+        if n_bins <= 0:
+            raise ValueError("top-L TACE n_bins must be a positive integer.")
+    if len(parts) == 5:
+        v = parts[4].strip().lower()
+        if v in ("1", "true", "yes"):
+            include_true = True
+        elif v in ("0", "false", "no"):
+            include_true = False
+        else:
+            raise ValueError("top-L include_true must be 0/1 (or true/false).")
+    return L, threshold, n_bins, include_true
+
+
+def _parse_filter_topl_spec(spec: str) -> tuple[int, bool]:
+    """Parse filtering spec for per-sample top-L truncation + renormalization.
+
+    Supported forms:
+    - "filter_topl@<L>" -> include_true=False
+    - "filter_topl@<L>@<include_true>" where include_true is 0/1 or true/false
+
+    Returns:
+        (L, include_true)
+    """
+
+    if not spec.startswith("filter_topl@"):
+        raise ValueError(
+            "Invalid filter_topl spec. Use 'filter_topl@<L>' or 'filter_topl@<L>@<include_true>'."
+        )
+    parts = spec.split("@")
+    if len(parts) not in (2, 3):
+        raise ValueError(
+            "Invalid filter_topl spec. Use 'filter_topl@<L>' or 'filter_topl@<L>@<include_true>'."
+        )
+    try:
+        L = int(parts[1])
+    except Exception as e:
+        raise ValueError(f"Invalid filter_topl L: {parts[1]!r}") from e
+    if L <= 0:
+        raise ValueError("filter_topl L must be a positive integer.")
+
+    include_true = False
+    if len(parts) == 3:
+        v = parts[2].strip().lower()
+        if v in ("1", "true", "yes"):
+            include_true = True
+        elif v in ("0", "false", "no"):
+            include_true = False
+        else:
+            raise ValueError("filter_topl include_true must be 0/1 (or true/false).")
+    return L, include_true
+
+
+def _filter_pred_proba_topl(
+    y_pred_proba,
+    *,
+    n_samples: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    top_l: int,
+    include_true_full_orders: list[tuple[int, ...]] | None,
+) -> dict[tuple[int, ...], torch.Tensor]:
+    """Filter a full-ranking distribution to the per-sample top-L support and renormalize.
+
+    Input can be a dict-of-vectors or list-of-dicts; output is a dict-of-vectors.
+    """
+
+    ranking_list, prob_matrix = _coerce_ranking_probabilities(
+        y_pred_proba, n_samples=n_samples, device=device, dtype=dtype
+    )
+    R = len(ranking_list)
+    if R == 0:
+        return {}
+
+    probs = prob_matrix.clone()  # (R, n_samples)
+    key_to_idx = {tuple(r): i for i, r in enumerate(ranking_list)}
+
+    k_keep = min(int(top_l), R)
+    for s in range(n_samples):
+        col = probs[:, s]
+        if k_keep < R:
+            top_idx = torch.topk(col, k_keep, largest=True, sorted=False).indices
+            keep_mask = torch.zeros((R,), device=device, dtype=torch.bool)
+            keep_mask[top_idx] = True
+        else:
+            keep_mask = torch.ones((R,), device=device, dtype=torch.bool)
+
+        if include_true_full_orders is not None:
+            true_key = include_true_full_orders[s]
+            j = key_to_idx.get(true_key, None)
+            if j is not None:
+                keep_mask[j] = True
+
+        col = col * keep_mask.to(dtype=dtype)
+        denom = float(col.sum().item())
+        if denom > 0.0:
+            col = col / denom
+        probs[:, s] = col
+
+    return {tuple(r): probs[i] for i, r in enumerate(ranking_list)}
+
+
+def _aggregate_event_distribution(
+    sample_pred: dict,
+    *,
+    event: str,
+    k: int,
+    item_set: tuple[int, ...] | None = None,
+) -> dict[tuple[int, ...], float]:
+    """Aggregate a per-sample ranking distribution into an event distribution.
+
+    Args:
+        sample_pred: dict mapping ranking key -> prob for a single sample.
+        event: "topk" or "subk".
+        k: event length.
+        item_set: required when event=="subk".
+    """
+
+    out: dict[tuple[int, ...], float] = {}
+    if not isinstance(sample_pred, dict):
+        sample_pred = dict(sample_pred)
+    for r_key, p in sample_pred.items():
+        r = tuple(r_key)
+        if len(r) < k:
+            continue
+        if event == "topk":
+            key = r[:k]
+        elif event == "subk":
+            if item_set is None:
+                raise ValueError("item_set is required for subk aggregation")
+            key = tuple([int(x) for x in r if int(x) in item_set])
+            if len(key) != k:
+                continue
+        else:
+            raise ValueError(f"Unknown event: {event!r}")
+
+        out[key] = out.get(key, 0.0) + float(p)
+    return out
+
+
+def _truncate_and_renormalize_distribution(
+    dist: dict[tuple[int, ...], float],
+    *,
+    top_l: int,
+    include_key: tuple[int, ...] | None,
+) -> dict[tuple[int, ...], float]:
+    """Keep only the top-L keys (by prob), optionally forcing one key to be included, then renormalize."""
+
+    if top_l <= 0:
+        raise ValueError("top_l must be positive")
+
+    if len(dist) == 0:
+        if include_key is None:
+            return {}
+        return {include_key: 1.0}
+
+    # Sort by probability mass descending.
+    items = sorted(dist.items(), key=lambda kv: kv[1], reverse=True)
+    kept = dict(items[:top_l])
+
+    if include_key is not None and include_key not in kept:
+        kept[include_key] = float(dist.get(include_key, 0.0))
+
+    total = float(sum(kept.values()))
+    if total <= 0.0:
+        # Degenerate: fall back to a point mass on include_key if provided, else return original.
+        if include_key is not None:
+            return {include_key: 1.0}
+        return dist
+    return {k: v / total for k, v in kept.items()}
+
+
+def thresholded_adaptive_calibration_error_torch(
+    probs: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    n_bins: int = 10,
+    threshold: float = 0.01,
+) -> dict[str, torch.Tensor]:
+    """Thresholded Adaptive Calibration Error (TACE-style) for multiclass probs.
+
+    Implementation used in this repo:
+    - For each class c, keep samples with p_c > threshold.
+    - Equal-frequency bin those retained samples by p_c.
+    - Compute weighted |acc - conf| within each bin (weights by bin frequency).
+    - Average across classes that have at least one retained sample.
+
+    Notes:
+        - Any sample with a negative label is ignored (used as a sentinel in some helpers).
+    """
+
+    if probs.ndim != 2:
+        raise ValueError("probs must have shape (N, K)")
+    if labels.ndim != 1:
+        raise ValueError("labels must have shape (N,)")
+    if probs.shape[0] != labels.shape[0]:
+        raise ValueError("probs and labels must have the same number of samples")
+    if n_bins <= 0:
+        raise ValueError("n_bins must be positive")
+    if threshold < 0.0 or threshold > 1.0:
+        raise ValueError("threshold must be in [0, 1]")
+
+    device = probs.device
+    dtype = probs.dtype
+    N, K = probs.shape
+
+    valid = labels >= 0
+    if torch.any(~valid):
+        probs = probs[valid]
+        labels = labels[valid]
+        N = probs.shape[0]
+        if N == 0:
+            return {"ece": torch.tensor(0.0, device=device, dtype=dtype)}
+
+    per_class_ece: list[torch.Tensor] = []
+    for c in range(K):
+        p_c = probs[:, c]
+        keep = p_c > float(threshold)
+        n_keep = int(keep.sum().item())
+        if n_keep == 0:
+            continue
+
+        p = p_c[keep]
+        y = (labels[keep] == c).to(dtype=dtype)
+
+        sorted_p, order = torch.sort(p)
+        sorted_y = y[order]
+
+        b = min(n_bins, n_keep)
+        edges = torch.linspace(0, n_keep, steps=b + 1, device=device)
+        edges = torch.round(edges).to(torch.long)
+        edges[0] = 0
+        edges[-1] = n_keep
+
+        ece_c = torch.tensor(0.0, device=device, dtype=dtype)
+        for bi in range(b):
+            start = int(edges[bi].item())
+            end = int(edges[bi + 1].item())
+            if end <= start:
+                continue
+            p_bin = sorted_p[start:end]
+            y_bin = sorted_y[start:end]
+            conf = p_bin.mean()
+            acc = y_bin.mean()
+            weight = (end - start) / float(n_keep)
+            ece_c = ece_c + weight * torch.abs(acc - conf)
+
+        per_class_ece.append(ece_c)
+
+    if len(per_class_ece) == 0:
+        return {"ece": torch.tensor(0.0, device=device, dtype=dtype)}
+    return {"ece": torch.stack(per_class_ece).mean()}
+
+
+# def thresholded_adaptive_calibration_error_torch(
+#     probs: torch.Tensor,
+#     labels: torch.Tensor,
+#     *,
+#     n_bins: int = 10,
+#     threshold: float = 0.01,
+# ) -> dict[str, torch.Tensor]:
+#     """Thresholded Adaptive Calibration Error (TACE-style) for multiclass probs.
+
+#     Motivation for this codebase: when the number of classes is factorial in n_items,
+#     most class probabilities are extremely small. Thresholding removes near-zero
+#     predictions that otherwise dominate binning artifacts, and adaptive (equal-sample)
+#     binning reduces empty-bin issues versus equal-width bins.
+
+#     This follows the standard per-class decomposition:
+#     - For each class c, keep samples with p_c > threshold.
+#     - Bin remaining samples by quantiles of p_c into ~equal-size bins.
+#     - Compute an ECE-style weighted absolute gap |acc - conf| per bin.
+#     - Average across classes that have at least one retained sample.
+
+#     Args:
+#         probs: Tensor of shape (N, K) with predicted probabilities.
+#         labels: Tensor of shape (N,) with integer class labels in [0, K-1].
+#         n_bins: Number of equal-frequency bins per class.
+#         threshold: Probability threshold for retaining predictions per class.
+
+#     Returns:
+#         dict with key "ece" and a scalar torch.Tensor.
+#     """
+
+#     if probs.ndim != 2:
+#         raise ValueError("probs must have shape (N, K)")
+#     if labels.ndim != 1:
+#         raise ValueError("labels must have shape (N,)")
+#     if probs.shape[0] != labels.shape[0]:
+#         raise ValueError("probs and labels must have the same number of samples")
+#     if n_bins <= 0:
+#         raise ValueError("n_bins must be positive")
+#     if threshold < 0.0 or threshold > 1.0:
+#         raise ValueError("threshold must be in [0, 1]")
+
+#     device = probs.device
+#     dtype = probs.dtype
+#     N, K = probs.shape
+
+#     # Ignore any sentinel/invalid labels (some helper tensors use -2 for 'no match').
+#     valid = labels >= 0
+#     if torch.any(~valid):
+#         probs = probs[valid]
+#         labels = labels[valid]
+#         N = probs.shape[0]
+#         if N == 0:
+#             return {"ece": torch.tensor(0.0, device=device, dtype=dtype)}
+
+#     per_class_ece = []
+#     for c in range(K):
+#         p_c = probs[:, c]
+#         keep = p_c > float(threshold)
+#         n_keep = int(keep.sum().item())
+#         if n_keep == 0:
+#             continue
+
+#         p = p_c[keep]
+#         y = (labels[keep] == c).to(dtype=dtype)
+
+#         # Sort by confidence for equal-frequency bins.
+#         sorted_p, order = torch.sort(p)
+#         sorted_y = y[order]
+
+#         # Use at most one sample per bin; for tiny n_keep, reduce bin count.
+#         b = min(n_bins, n_keep)
+#         # Bin edges in index space.
+#         edges = torch.linspace(0, n_keep, steps=b + 1, device=device)
+#         edges = torch.round(edges).to(torch.long)
+#         # Ensure monotonic and last edge is exactly n_keep.
+#         edges[0] = 0
+#         edges[-1] = n_keep
+
+#         ece_c = torch.tensor(0.0, device=device, dtype=dtype)
+#         for bi in range(b):
+#             start = int(edges[bi].item())
+#             end = int(edges[bi + 1].item())
+#             if end <= start:
+#                 continue
+#             p_bin = sorted_p[start:end]
+#             y_bin = sorted_y[start:end]
+#             conf = p_bin.mean()
+#             acc = y_bin.mean()
+#             weight = (end - start) / float(n_keep)
+#             ece_c = ece_c + weight * torch.abs(acc - conf)
+
+#         per_class_ece.append(ece_c)
+
+#     if len(per_class_ece) == 0:
+#         return {"ece": torch.tensor(0.0, device=device, dtype=dtype)}
+#     return {"ece": torch.stack(per_class_ece).mean()}
+
+
+def thresholded_adaptive_binary_ece_torch(
+    y_true: torch.Tensor,
+    y_prob: torch.Tensor,
+    *,
+    n_bins: int = 10,
+    threshold: float = 0.01,
+    debug: bool = False,
+) -> torch.Tensor:
+    """Binary TACE-style ECE: threshold + equal-frequency binning.
+
+    This mirrors the TACE idea for a single "positive class" event:
+    keep samples where the model assigns non-trivial mass to the event
+    (y_prob > threshold), then compute an ECE with equal-sample bins.
+
+    Args:
+        y_true: (N,) tensor with {0,1} labels (or float in [0,1]).
+        y_prob: (N,) tensor with predicted probabilities in [0,1].
+        n_bins: number of equal-frequency bins.
+        threshold: ignore samples with y_prob <= threshold.
+
+    Returns:
+        Scalar tensor ECE.
+    """
+    if y_true.ndim != 1 or y_prob.ndim != 1:
+        raise ValueError("y_true and y_prob must be 1D")
+    if y_true.shape[0] != y_prob.shape[0]:
+        raise ValueError("y_true and y_prob must have the same length")
+    if n_bins <= 0:
+        raise ValueError("n_bins must be positive")
+    if threshold < 0.0 or threshold > 1.0:
+        raise ValueError("threshold must be in [0, 1]")
+
+    device = y_prob.device
+    dtype = y_prob.dtype
+
+    keep = y_prob > float(threshold)
+    n_keep = int(keep.sum().item())
+    if n_keep == 0:
+        return torch.tensor(0.0, device=device, dtype=dtype)
+
+    p = y_prob[keep].to(dtype=dtype)
+    y = y_true[keep].to(dtype=dtype)
+
+    sorted_p, order = torch.sort(p)
+    sorted_y = y[order]
+
+    b = min(n_bins, n_keep)
+    edges = torch.linspace(0, n_keep, steps=b + 1, device=device)
+    edges = torch.round(edges).to(torch.long)
+    edges[0] = 0
+    edges[-1] = n_keep
+
+    ece = torch.tensor(0.0, device=device, dtype=dtype)
+    for bi in range(b):
+        start = int(edges[bi].item())
+        end = int(edges[bi + 1].item())
+        if end <= start:
+            continue
+        p_bin = sorted_p[start:end]
+        y_bin = sorted_y[start:end]
+        conf = p_bin.mean()
+        acc = y_bin.mean()
+        weight = (end - start) / float(n_keep)
+        ece = ece + weight * torch.abs(acc - conf)
+        if debug:
+            print(
+                f"Bin {bi}: weight={weight}, acc={acc}, conf={conf}, contrib={weight * torch.abs(acc - conf)}"
+            )
+    return ece
 
 
 def calculate_binary_ece(
@@ -927,7 +1487,7 @@ def calculate_sub_k_full_rank_calibration(
         y_true, y_pred_proba = filter_rankings_by_occurrence(
             y_true, y_pred_proba, full_order_true, mode="top_10"
         )
-    
+
     possible_items_sets = list(combinations(items, k))
 
     sub_k_full_rank_ece = {}
@@ -952,6 +1512,7 @@ def calculate_sub_k_full_rank_calibration(
         y_true_sub, y_prob_sub = construct_sub_k_full_rank_tensors(
             possible_sub_rankings, y_true, y_pred_proba, rankings_to_idx
         )
+
         if mode == "binning":
             ece_sub_ranking = strong_calibration_error_torch(
                 y_prob_sub, y_true_sub, resolution=10
@@ -960,6 +1521,9 @@ def calculate_sub_k_full_rank_calibration(
             ece_sub_ranking = strong_calibration_error_dirichlet_kernel(
                 y_prob_sub, y_true_sub, h=h, p_norm=p_norm
             )
+        else:
+            raise ValueError("Invalid mode. Options are 'binning' and 'kernel'.")
+
         sub_k_full_rank_ece[item_set] = ece_sub_ranking["ece"]
     total_ece = np.mean(list(sub_k_full_rank_ece.values()))
     return {"sub_k_full_rank_ece": sub_k_full_rank_ece, "total_ece": total_ece}
@@ -1150,6 +1714,8 @@ def calculate_top_k_full_rank_calibration(
         ece_top_ranking = strong_calibration_error_dirichlet_kernel(
             y_prob_top_k, y_true_top_k, h=h, p_norm=p_norm
         )
+    else:
+        raise ValueError("Invalid mode. Options are 'binning' and 'kernel'.")
 
     return {"total_ece": ece_top_ranking["ece"]}
 
@@ -1263,9 +1829,7 @@ def construct_sub_k_tensors(
 
     # Build position matrix pos[r, item-1] = position (0=best) of item in ranking r.
 
-    order = torch.tensor(
-            ranking_list, device=device, dtype=torch.long
-    )  # (R, n_items)
+    order = torch.tensor(ranking_list, device=device, dtype=torch.long)  # (R, n_items)
 
     R = order.shape[0]
     pos = torch.empty((R, n_items), device=device, dtype=torch.long)
@@ -1317,6 +1881,9 @@ def calculate_sub_k_calibration(
     rank_weighting="uniform",
     bin_spacing="linear",
     discrepancy="abs",
+    ece_method: str | None = None,
+    filter_mode: str | None = None,
+    agg_weighting: str | None = None,
 ):
     """This method calucates the sub_k calibration as definined in our work.
     For this it constructs all rankings of `items` which are of length `k` and then aggregates `y_pred_proba` accordingly.
@@ -1333,16 +1900,59 @@ def calculate_sub_k_calibration(
     """
     from itertools import combinations, permutations
 
+    # --- Backwards compatibility: interpret legacy `rank_weighting` if split args are not provided ---
+    if ece_method is None and filter_mode is None and agg_weighting is None:
+        if isinstance(rank_weighting, str) and rank_weighting.startswith(
+            ("tace", "tva")
+        ):
+            ece_method = rank_weighting
+            agg_weighting = "uniform"
+        elif rank_weighting in ("95_prob_mass", "top_10"):
+            filter_mode = rank_weighting
+            agg_weighting = "uniform"
+        else:
+            agg_weighting = rank_weighting
+    else:
+        if agg_weighting is None:
+            if rank_weighting in (
+                "uniform",
+                "prevalence",
+                "pred_mass",
+            ):
+                agg_weighting = rank_weighting
+            else:
+                agg_weighting = "uniform"
+
+    tace_params: tuple[float, int] | None = None
+    tva_params: tuple[float, int] | None = None
+    if isinstance(ece_method, str) and ece_method.startswith("tace"):
+        tace_params = _parse_tace_rank_weighting_spec(ece_method)
+    if isinstance(ece_method, str) and ece_method.startswith("tva"):
+        tva_params = _parse_tva_rank_weighting_spec(ece_method)
+
     # y_true is ranks-per-item; derive full best->worst orderings when needed.
     full_order_true = torch.argsort(y_true, dim=1) + 1
 
-    if rank_weighting == "95_prob_mass":
+    if filter_mode == "95_prob_mass":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
             y_true, y_pred_proba, full_order_true, mode="95_prob_mass"
         )
-    elif rank_weighting == "top_10":
+    elif filter_mode == "top_10":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
             y_true, y_pred_proba, full_order_true, mode="top_10"
+        )
+    elif isinstance(filter_mode, str) and filter_mode.startswith("filter_topl"):
+        L, include_true = _parse_filter_topl_spec(filter_mode)
+        include_orders = (
+            [tuple(x.tolist()) for x in full_order_true] if include_true else None
+        )
+        y_pred_proba = _filter_pred_proba_topl(
+            y_pred_proba,
+            n_samples=y_true.shape[0],
+            device=y_true.device,
+            dtype=torch.float32,
+            top_l=L,
+            include_true_full_orders=include_orders,
         )
 
     if y_true.shape[1] >= 8:
@@ -1359,6 +1969,38 @@ def calculate_sub_k_calibration(
     else:
         possible_sub_rankings = list(permutations(items, k))
 
+    # TvA mode for sub-k: pick the single most confident sub-ranking event per sample
+    # (events are not mutually exclusive, so this is a multilabel-to-binary reduction).
+    if tva_params is not None:
+        tva_threshold, tva_bins = tva_params
+        device = y_true.device
+        dtype = torch.float32
+        n_samples = y_true.shape[0]
+
+        best_conf = torch.zeros((n_samples,), device=device, dtype=dtype)
+        best_correct = torch.zeros((n_samples,), device=device, dtype=dtype)
+
+        for sub_ranking in tqdm(possible_sub_rankings, desc="Calculating Sub-k TvA"):
+            y_true_sub, y_prob_sub = construct_sub_k_tensors(
+                list(sub_ranking), y_true, y_pred_proba
+            )
+            y_true_sub = y_true_sub.to(dtype=dtype)
+            y_prob_sub = y_prob_sub.to(dtype=dtype)
+
+            better = y_prob_sub > best_conf
+            best_conf = torch.where(better, y_prob_sub, best_conf)
+            best_correct = torch.where(better, y_true_sub, best_correct)
+
+        total_ece = float(
+            thresholded_adaptive_binary_ece_torch(
+                best_correct,
+                best_conf,
+                n_bins=tva_bins,
+                threshold=tva_threshold,
+            ).item()
+        )
+        return {"sub_rankings_ece": [], "total_ece": total_ece}
+
     sub_rankings_ece = []
     for i in tqdm(range(len(possible_sub_rankings)), desc="Calculating Sub-k ECE"):
         sub_ranking = possible_sub_rankings[i]
@@ -1367,20 +2009,21 @@ def calculate_sub_k_calibration(
             list(sub_ranking), y_true, y_pred_proba
         )
         # Calculate the ECE for this sub-ranking
-        ece_sub_ranking = calculate_binary_ece_general(
-            y_true_sub,
-            y_prob_sub,
-            discrepancy=discrepancy,
-            eps=1e-12,
-            bin_spacing=bin_spacing,
-        )
-        # print(
-        #     "Finished calculating ECE for sub-ranking:",
-        #     sub_ranking,
-        #     " ECE:",
-        #     ece_sub_ranking,
-        # )
-        # print("Finished sub-ranking:", sub_ranking, " ECE:", ece_sub_ranking)
+        if tace_params is not None:
+            threshold, n_bins = tace_params
+            ece_sub_ranking = float(
+                thresholded_adaptive_binary_ece_torch(
+                    y_true_sub, y_prob_sub, n_bins=n_bins, threshold=threshold
+                ).item()
+            )
+        else:
+            ece_sub_ranking = calculate_binary_ece_general(
+                y_true_sub,
+                y_prob_sub,
+                discrepancy=discrepancy,
+                eps=1e-12,
+                bin_spacing=bin_spacing,
+            )
         weight_prev = float(y_true_sub.mean().item())
         weight_pred = float(y_prob_sub.mean().item())
 
@@ -1399,16 +2042,54 @@ def calculate_sub_k_calibration(
         r["weight_prevalence"] /= total_weight_prev
         r["weight_pred_mass"] /= total_weight_pred
 
-    if rank_weighting in ["uniform","95_prob_mass","top_10"]:
+    if tva_params is not None:
+        # TvA mode for sub-k: pick the single most confident sub-ranking event per sample
+        # (events are not mutually exclusive, so this is a multilabel-to-binary reduction).
+        tva_threshold, tva_bins = tva_params
+        device = y_true.device
+        dtype = torch.float32
+        n_samples = y_true.shape[0]
+
+        best_conf = torch.zeros((n_samples,), device=device, dtype=dtype)
+        best_correct = torch.zeros((n_samples,), device=device, dtype=dtype)
+
+        for sub_ranking in tqdm(possible_sub_rankings, desc="Calculating Sub-k TvA"):
+            y_true_sub, y_prob_sub = construct_sub_k_tensors(
+                list(sub_ranking), y_true, y_pred_proba
+            )
+            y_true_sub = y_true_sub.to(dtype=dtype)
+            y_prob_sub = y_prob_sub.to(dtype=dtype)
+
+            better = y_prob_sub > best_conf
+            best_conf = torch.where(better, y_prob_sub, best_conf)
+            best_correct = torch.where(better, y_true_sub, best_correct)
+
+        total_ece = float(
+            thresholded_adaptive_binary_ece_torch(
+                best_correct,
+                best_conf,
+                n_bins=tva_bins,
+                threshold=tva_threshold,
+            ).item()
+        )
+        return {"sub_rankings_ece": [], "total_ece": total_ece}
+
+    if tace_params is not None:
+        # TACE path: rank_weighting encodes the ECE method, so we default to uniform
+        # aggregation across sub-rankings (consistent with previous "uniform").
         total_ece = np.mean([r["ece"] for r in sub_rankings_ece])
-    elif rank_weighting == "prevalence":
+    elif agg_weighting in ["uniform", "95_prob_mass", "top_10"]:
+        total_ece = np.mean([r["ece"] for r in sub_rankings_ece])
+    elif agg_weighting == "prevalence":
         total_ece = np.sum(
             [r["ece"] * r["weight_prevalence"] for r in sub_rankings_ece]
         )
-    elif rank_weighting == "pred_mass":
+    elif agg_weighting == "pred_mass":
         total_ece = np.sum([r["ece"] * r["weight_pred_mass"] for r in sub_rankings_ece])
+    elif agg_weighting == "max":
+        total_ece = np.max([r["ece"] for r in sub_rankings_ece])
     else:
-        raise ValueError(rank_weighting)
+        raise ValueError(agg_weighting)
     return {"sub_rankings_ece": sub_rankings_ece, "total_ece": total_ece}
 
 
@@ -1544,6 +2225,9 @@ def calculate_top_k_calibration(
     rank_weighting="uniform",
     bin_spacing="linear",
     discrepancy="abs",
+    ece_method: str | None = None,
+    filter_mode: str | None = None,
+    agg_weighting: str | None = None,
 ):
     """This method calucates the top_k calibration as definined in our work.
     For this it constructs all rankings of `items` which are of length `k` and then aggregates `y_pred_proba` accordingly.
@@ -1560,16 +2244,63 @@ def calculate_top_k_calibration(
     """
     from itertools import combinations, permutations
 
+    # --- Backwards compatibility: interpret legacy `rank_weighting` if split args are not provided ---
+    if ece_method is None and filter_mode is None and agg_weighting is None:
+        if isinstance(rank_weighting, str) and rank_weighting.startswith(
+            ("tace", "tva", "topl_tace")
+        ):
+            ece_method = rank_weighting
+            agg_weighting = "uniform"
+        elif rank_weighting in ("95_prob_mass", "top_10"):
+            filter_mode = rank_weighting
+            agg_weighting = "uniform"
+        else:
+            agg_weighting = rank_weighting
+    else:
+        if agg_weighting is None:
+            if rank_weighting in (
+                "uniform",
+                "prevalence",
+                "pred_mass",
+                "most_confident",
+            ):
+                agg_weighting = rank_weighting
+            else:
+                agg_weighting = "uniform"
+
+    tace_params: tuple[float, int] | None = None
+    tva_params: tuple[float, int] | None = None
+    topl_tace_params: tuple[int, float, int, bool] | None = None
+    if isinstance(ece_method, str) and ece_method.startswith("tace"):
+        tace_params = _parse_tace_rank_weighting_spec(ece_method)
+    if isinstance(ece_method, str) and ece_method.startswith("tva"):
+        tva_params = _parse_tva_rank_weighting_spec(ece_method)
+    if isinstance(ece_method, str) and ece_method.startswith("topl_tace"):
+        topl_tace_params = _parse_topl_tace_rank_weighting_spec(ece_method)
+
     # y_true is ranks-per-item; derive full best->worst orderings when needed.
     full_order_true = torch.argsort(y_true, dim=1) + 1
 
-    if rank_weighting == "95_prob_mass":
+    if filter_mode == "95_prob_mass":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
             y_true, y_pred_proba, full_order_true, mode="95_prob_mass"
         )
-    elif rank_weighting == "top_10":
+    elif filter_mode == "top_10":
         y_true, y_pred_proba = filter_rankings_by_occurrence(
             y_true, y_pred_proba, full_order_true, mode="top_10"
+        )
+    elif isinstance(filter_mode, str) and filter_mode.startswith("filter_topl"):
+        L, include_true = _parse_filter_topl_spec(filter_mode)
+        include_orders = (
+            [tuple(x.tolist()) for x in full_order_true] if include_true else None
+        )
+        y_pred_proba = _filter_pred_proba_topl(
+            y_pred_proba,
+            n_samples=y_true.shape[0],
+            device=y_true.device,
+            dtype=torch.float32,
+            top_l=L,
+            include_true_full_orders=include_orders,
         )
 
     if y_true.shape[1] >= 8:
@@ -1581,6 +2312,106 @@ def calculate_top_k_calibration(
         possible_top_k_rankings = list(unique_top_k_rankings)
     else:
         possible_top_k_rankings = list(permutations(items, k))
+
+    # TvA mode: per sample, take the most confident predicted top-k ranking and
+    # evaluate calibration of correctness vs confidence.
+    if tva_params is not None:
+        tva_threshold, tva_bins = tva_params
+        device = y_true.device
+        dtype = torch.float32
+        n_samples = y_true.shape[0]
+
+        full_order_true = torch.argsort(y_true, dim=1) + 1
+        true_keys = [tuple(full_order_true[s, :k].tolist()) for s in range(n_samples)]
+        true_to_idx = {tuple(r): i for i, r in enumerate(possible_top_k_rankings)}
+        true_idx = torch.full((n_samples,), -1, device=device, dtype=torch.long)
+        for s in range(n_samples):
+            j = true_to_idx.get(true_keys[s], None)
+            if j is not None:
+                true_idx[s] = int(j)
+
+        best_conf = torch.zeros((n_samples,), device=device, dtype=dtype)
+        best_idx = torch.full((n_samples,), -1, device=device, dtype=torch.long)
+
+        for j, top_k_ranking in enumerate(
+            tqdm(possible_top_k_rankings, desc="Calculating Top-k TvA")
+        ):
+            _, y_prob_top_k = construct_top_k_tensors(
+                list(top_k_ranking), y_true, y_pred_proba
+            )
+            y_prob_top_k = y_prob_top_k.to(dtype=dtype)
+            better = y_prob_top_k > best_conf
+            best_conf = torch.where(better, y_prob_top_k, best_conf)
+            best_idx = torch.where(
+                better,
+                torch.tensor(j, device=device, dtype=torch.long),
+                best_idx,
+            )
+
+        correct = (best_idx == true_idx).to(dtype=dtype)
+        ece = float(
+            thresholded_adaptive_binary_ece_torch(
+                correct, best_conf, n_bins=tva_bins, threshold=tva_threshold
+            ).item()
+        )
+        return {"top_k_rankings_ece": [], "total_ece": ece}
+
+    # Top-L truncated+renormalized distribution calibration (multiclass TACE).
+    # Aggregate predicted mass to top-k prefixes, keep top-L per sample, renormalize,
+    # then compute multiclass TACE.
+    if topl_tace_params is not None:
+        top_l, tace_threshold, tace_bins, include_true = topl_tace_params
+        device = y_true.device
+        dtype = torch.float32
+        n_samples = y_true.shape[0]
+
+        full_order_true = torch.argsort(y_true, dim=1) + 1
+        true_keys = [tuple(full_order_true[s, :k].tolist()) for s in range(n_samples)]
+
+        # Build per-sample distributions over top-k prefixes.
+        ranking_list, prob_matrix = _coerce_ranking_probabilities(
+            y_pred_proba, n_samples=n_samples, device=device, dtype=dtype
+        )
+        per_sample: list[dict[tuple[int, ...], float]] = [{} for _ in range(n_samples)]
+        for i_r, r in enumerate(ranking_list):
+            r = tuple(r)
+            if len(r) < k:
+                continue
+            key = tuple(r[:k])
+            probs_r = prob_matrix[i_r]  # (n_samples,)
+            for s in range(n_samples):
+                v = float(probs_r[s].item())
+                if v == 0.0:
+                    continue
+                per_sample[s][key] = per_sample[s].get(key, 0.0) + v
+
+        truncated = []
+        for s in range(n_samples):
+            inc = true_keys[s] if include_true else None
+            truncated.append(
+                _truncate_and_renormalize_distribution(
+                    per_sample[s], top_l=top_l, include_key=inc
+                )
+            )
+
+        top_list, top_prob_matrix = _coerce_ranking_probabilities(
+            truncated, n_samples=n_samples, device=device, dtype=dtype
+        )
+        idx = {tuple(r): i for i, r in enumerate(top_list)}
+        labels = torch.full((n_samples,), -2, device=device, dtype=torch.long)
+        for s in range(n_samples):
+            j = idx.get(true_keys[s], None)
+            if j is not None:
+                labels[s] = int(j)
+
+        probs = top_prob_matrix.transpose(0, 1).contiguous()  # (N,K)
+        ece = float(
+            thresholded_adaptive_calibration_error_torch(
+                probs, labels, n_bins=tace_bins, threshold=tace_threshold
+            )["ece"].item()
+        )
+        return {"top_k_rankings_ece": [], "total_ece": ece}
+
     top_k_rankings_ece = []
     for top_k_ranking in possible_top_k_rankings:
         # Construct the binary classification tensors
@@ -1588,13 +2419,21 @@ def calculate_top_k_calibration(
             list(top_k_ranking), y_true, y_pred_proba
         )
         # Calculate the ECE for this top-k ranking
-        ece_top_k_ranking = calculate_binary_ece_general(
-            y_true_top_k,
-            y_prob_top_k,
-            discrepancy=discrepancy,
-            eps=1e-12,
-            bin_spacing=bin_spacing,
-        )
+        if tace_params is not None:
+            threshold, n_bins = tace_params
+            ece_top_k_ranking = float(
+                thresholded_adaptive_binary_ece_torch(
+                    y_true_top_k, y_prob_top_k, n_bins=n_bins, threshold=threshold
+                ).item()
+            )
+        else:
+            ece_top_k_ranking = calculate_binary_ece_general(
+                y_true_top_k,
+                y_prob_top_k,
+                discrepancy=discrepancy,
+                eps=1e-12,
+                bin_spacing=bin_spacing,
+            )
 
         weights_prev = float(y_true_top_k.mean().item())
         weights_pred = float(y_prob_top_k.mean().item())
@@ -1612,17 +2451,23 @@ def calculate_top_k_calibration(
         r["weight_prevalence"] /= total_weight_prev
         r["weight_pred_mass"] /= total_weight_pred
 
-    if rank_weighting in ["uniform","95_prob_mass","top_10"]:
+    if tace_params is not None:
+        # TACE path: rank_weighting encodes the ECE method, so we default to uniform
+        # aggregation across top-k rankings.
         total_ece = np.mean([r["ece"] for r in top_k_rankings_ece])
-    elif rank_weighting == "prevalence":
+    elif agg_weighting in ["uniform", "95_prob_mass", "top_10"]:
+        total_ece = np.mean([r["ece"] for r in top_k_rankings_ece])
+    elif agg_weighting == "prevalence":
         total_ece = np.sum(
             [r["ece"] * r["weight_prevalence"] for r in top_k_rankings_ece]
         )
-    elif rank_weighting == "pred_mass":
+    elif agg_weighting == "pred_mass":
         total_ece = np.sum(
             [r["ece"] * r["weight_pred_mass"] for r in top_k_rankings_ece]
         )
-    elif rank_weighting == "most_confident":
+    elif agg_weighting == "max":
+        total_ece = np.max([r["ece"] for r in top_k_rankings_ece])
+    elif agg_weighting == "most_confident":
         # Sum only the sub-ranking with 5 the highest predicted mass
         sorted_ece = list(
             sorted(
@@ -1631,7 +2476,7 @@ def calculate_top_k_calibration(
         )
         total_ece = sum(r["ece"] for r in sorted_ece[:5]) / 5.0
     else:
-        raise ValueError(rank_weighting)
+        raise ValueError(agg_weighting)
 
     return {"top_k_rankings_ece": top_k_rankings_ece, "total_ece": total_ece}
 
