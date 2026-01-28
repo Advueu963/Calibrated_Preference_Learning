@@ -1,6 +1,16 @@
 
 # Calibrated Preference Learning
 
+This repository contains the code for evaluating the calibration of Label Ranking models
+    -   `label_ranking_calibration.py`: Main experiment file for label ranking calibration
+    -   `rlhf_calibration.py`: Investigates the calibration of reward models
+    -   `src/cal_pref`: Main source code implementing Label Ranking models, training procedures, losses and evaluations
+    -   `scikit-lr`: Adapted code from [here](https://github.com/alfaro96/scikit-lr) to implement RPC model
+
+## How to install
+1. `uv sync`
+2. done :D
+
 ## Ranking Representations (Important)
 
 This repo uses two equivalent but different encodings of a ranking. We keep them

@@ -2088,6 +2088,8 @@ def calculate_sub_k_calibration(
         total_ece = np.sum([r["ece"] * r["weight_pred_mass"] for r in sub_rankings_ece])
     elif agg_weighting == "max":
         total_ece = np.max([r["ece"] for r in sub_rankings_ece])
+    elif agg_weighting == "sum":
+        total_ece = np.sum([r["ece"] for r in sub_rankings_ece])
     else:
         raise ValueError(agg_weighting)
     return {"sub_rankings_ece": sub_rankings_ece, "total_ece": total_ece}
@@ -2475,6 +2477,8 @@ def calculate_top_k_calibration(
             )
         )
         total_ece = sum(r["ece"] for r in sorted_ece[:5]) / 5.0
+    elif agg_weighting == "sum":
+        total_ece = np.sum([r["ece"] for r in top_k_rankings_ece])
     else:
         raise ValueError(agg_weighting)
 
