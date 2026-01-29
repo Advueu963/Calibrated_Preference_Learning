@@ -281,7 +281,7 @@ def train_placket_luce_rpc_model(
     y_noise = np.array(range(y_train.shape[-1], 0, -1))
     X_train = np.concatenate([X_train, x_noise.reshape(1, -1)], axis=0)
     y_train = np.concatenate([y_train, y_noise.reshape(1, -1)], axis=0)
-    
+
     baseline_estimator = baseline_estimator.fit(X_train, y_train)
     print(
         "Tau Score of RPC Baseline on Train Set: ",
@@ -1033,7 +1033,7 @@ def _style_lineplot_axis(ax, title, xlabel, ylabel, x_ticks, y_upper=None):
     ax.set_title(title, fontsize=16, fontweight="semibold", pad=12)
     ax.set_xlabel(xlabel, fontsize=13)
     ax.set_ylabel(ylabel, fontsize=13)
-    ax.set_ylim(-0.001, y_upper)
+    ax.set_ylim(-0.001, None)
     ax.set_facecolor("#f7f9fc")
     ax.grid(axis="y", linestyle="--", alpha=0.3)
     ax.tick_params(axis="both", labelsize=11)
@@ -1595,7 +1595,7 @@ if __name__ == "__main__":
                 results["MallowsModel"][0],
                 results["PreferenceModel"][0],
                 results["PlackettLuceRPC"][0],
-                fold
+                fold,
             )
         )
 
@@ -1765,7 +1765,7 @@ if __name__ == "__main__":
             "MallowsModel_Tau",
             "PreferenceModel_Tau",
             "PlackettLuceRPC_Tau",
-            "Fold_idx"
+            "Fold_idx",
         ],
     )
     tau_df.to_csv(

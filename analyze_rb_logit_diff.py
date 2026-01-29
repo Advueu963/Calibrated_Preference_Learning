@@ -22,29 +22,31 @@ import torch
 from scipy.stats import kendalltau
 from cal_pref.utils import calculate_binary_ece, calculate_binary_ece_general
 import scienceplots
-plt.style.use('science')
+
+plt.style.use("science")
 
 MODEL_NAME_ABBREVIATIONS = {
-    "Skywork/Skywork-Reward-V2-Llama-3.1-8B": "SkyworkV2-Llama-8B",
-    "Skywork/Skywork-Reward-V2-Qwen3-8B": "SkyworkV2-Qwen3-8B",
-    "infly/INF-ORM-Llama3.1-70B": "INF-ORM-Llama3.1-70B",
-    "allenai/Llama-3.1-70B-Instruct-RM-RB2": "Llama-3.1-70B-Instruct-RM",
-    "Skywork/Skywork-Reward-V2-Qwen3-4B": "SkyworkV2-Qwen3-4B",
-    "Skywork/Skywork-Reward-V2-Llama-3.2-3B": "SkyworkV2-Llama-3.2-3B",
-    "LxzGordon/URM-LLaMa-3.1-8B": "URM-LLaMa-3.1-8B",
-    "Skywork/Skywork-Reward-Llama-3.1-8B": "Skywork-Llama-8B",
-    "allenai/Llama-3.1-8B-Instruct-RM-RB2": "Llama-3.1-8B-Instruct-RM",
+    "Skywork/Skywork-Reward-V2-Llama-3.1-8B": "SK-L-8B",
+    "Skywork/Skywork-Reward-V2-Qwen3-8B": "SK-Q3-8B",
+    "infly/INF-ORM-Llama3.1-70B": "INF-ORM-L3.1-70B",
+    "allenai/Llama-3.1-70B-Instruct-RM-RB2": "L3.1-70B-Instruct-RM",
+    "Skywork/Skywork-Reward-V2-Qwen3-4B": "SK-Q3-4B",
+    "Skywork/Skywork-Reward-V2-Llama-3.2-3B": "SKL3.2-3B",
+    "LxzGordon/URM-LLaMa-3.1-8B": "URM-L3.1-8B",
+    "Skywork/Skywork-Reward-Llama-3.1-8B": "SK-L-8B",
+    "allenai/Llama-3.1-8B-Instruct-RM-RB2": "L3.1-8B-Instruct-RM",
     "ShikaiChen/LDL-Reward-Gemma-2-27B-v0.1": "LDL-Reward-Gemma-27B",
-    "allenai/Llama-3.1-Tulu-3-70B-SFT-RM-RB2": "Llama-3.1-Tulu-70B-SFT-RM",
-    "Skywork/Skywork-Reward-Llama-3.1-8B-v0.2": "Skywork-Llama-8B-v0.2",
+    "allenai/Llama-3.1-Tulu-3-70B-SFT-RM-RB2": "L-.1-Tulu-70B-SFT-RM",
+    "Skywork/Skywork-Reward-Llama-3.1-8B-v0.2": "SK-L-8B-v0.2",
     "HFXM/RAMO-Llama3.1-8B": "RAMO-Llama3.1-8B",
-    "Skywork/Skywork-VL-Reward-7B": "Skywork-VL-Reward-7B",
-    "allenai/Llama-3.1-Tulu-3-8B-RL-RM-RB2": "Llama-3.1-Tulu-8B-RL-RM",
-    "allenai/Llama-3.1-Tulu-3-8B-DPO-RM-RB2": "Llama-3.1-Tulu-8B-DPO-RM",
-    "allenai/Llama-3.1-Tulu-3-8B-SFT-RM-RB2": "Llama-3.1-Tulu-8B-SFT-RM",
+    "Skywork/Skywork-VL-Reward-7B": "SK-VL-Reward-7B",
+    "allenai/Llama-3.1-Tulu-3-8B-RL-RM-RB2": "L3.1-Tulu-8B-RL-RM",
+    "allenai/Llama-3.1-Tulu-3-8B-DPO-RM-RB2": "L3.1-Tulu-8B-DPO-RM",
+    "allenai/Llama-3.1-Tulu-3-8B-SFT-RM-RB2": "L3.1-Tulu-8B-SFT-RM",
     "Skywork/Skywork-Reward-V2-Qwen3-1.7B": "SkyworkV2-Qwen3-1.7B",
-    "Ray2333/GRM-Llama3-8B-rewardmodel-ft": "GRM-Llama3-8B-rewardmodel-ft",
+    "Ray2333/GRM-Llama3-8B-rewardmodel-ft": "GRM-L-8B-rewardmodel-ft",
 }
+
 
 def parse_leaderboard(csv_path: Path) -> list[tuple[int, str, str, float]]:
     """Parse leaderboard CSV and extract all models."""
@@ -212,12 +214,12 @@ def compute_correlations(results: list[dict]) -> dict[str, tuple[float, float]]:
 
     ece_ranks_list = [r["ece_score"] for r in results]
     leaderboard_ranks_list = [r["rank"] for r in results]
-    factuality_ranks_list = [float(r["factuality"]) for r in results]
-    precise_if_ranks_list = [float(r["precise_if"]) for r in results]
-    math_ranks_list = [float(r["math"]) for r in results]
-    safety_ranks_list = [float(r["safety"]) for r in results]
-    focus_ranks_list = [float(r["focus"]) for r in results]
-    ties_ranks_list = [float(r["ties"]) for r in results]
+    factuality_ranks_list = 100 - np.array([float(r["factuality"]) for r in results])
+    precise_if_ranks_list = 100 - np.array([float(r["precise_if"]) for r in results])
+    math_ranks_list = 100 - np.array([float(r["math"]) for r in results])
+    safety_ranks_list = 100 - np.array([float(r["safety"]) for r in results])
+    focus_ranks_list = 100 - np.array([float(r["focus"]) for r in results])
+    ties_ranks_list = 100 - np.array([float(r["ties"]) for r in results])
 
     # Compute Spearman correlations
     correlations = {
@@ -227,7 +229,7 @@ def compute_correlations(results: list[dict]) -> dict[str, tuple[float, float]]:
         "Math": kendalltau(ece_ranks_list, math_ranks_list),
         "Safety": kendalltau(ece_ranks_list, safety_ranks_list),
         "Focus": kendalltau(ece_ranks_list, focus_ranks_list),
-        "Ties": kendalltau(ece_ranks_list, ties_ranks_list),
+        #"Ties": kendalltau(ece_ranks_list, ties_ranks_list),
     }
     for key, (corr, pval) in correlations.items():
         print(
@@ -253,16 +255,16 @@ def visualize_correlation(
     # Color by sign
     colors = ["#2E86AB" if v >= 0 else "#D1495B" for v in corr_sorted]
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
+    plt.style.use(["science", "no-latex"])
+    fig, ax = plt.subplots(figsize=(6, 5))
 
     bars = ax.barh(
         labels_sorted, corr_sorted, color=colors, edgecolor="white", linewidth=1.0
     )
     ax.invert_yaxis()
-    ax.set_xlabel("Spearman correlation (ECE vs metric)")
+    ax.set_xlabel("Kendall tau correlation (ECE vs metric)")
     ax.set_title("Correlation between ECE and RewardBench metrics")
-    ax.set_xlim(-1, 1)
+    ax.set_xlim(0, 1)
     ax.axvline(0, color="black", linewidth=1.0, alpha=0.8)
 
     # Value labels at the end of each bar
@@ -281,9 +283,9 @@ def visualize_correlation(
 
     ax.grid(True, axis="x", alpha=0.35)
     ax.grid(False, axis="y")
-
+    fig.tight_layout()
     fig.savefig(
-        os.path.join(save_folder, "ece_correlation_bar_chart.png"),
+        os.path.join(save_folder, "ece_correlation_bar_chart.pdf"),
         dpi=200,
         bbox_inches="tight",
     )
@@ -326,7 +328,7 @@ def visualize_accuracy_rejection_curve(
     highlight_blue = "#1F77B4"  # vivid blue (worst calibration)
     muted_alpha = 0.25
 
-    plt.style.use("seaborn-v0_8-whitegrid")
+    plt.style.use(["science", "no-latex"])
     fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
 
     # Plot in order of increasing ECE so "best calibrated" curves are easy to notice
@@ -1442,32 +1444,27 @@ def quantify_grouping_quality(
 
 
 def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
-    """Scatter plot of (raw) ECE values for the best models.
+    """Compact version of `visualize_raw_ece_scores`.
 
-    Styling is kept consistent with the ECE boxplots in `experiment_calibration.py`.
+    Differences vs the default plot:
+      - draws an in-figure legend (reward model colors + global mean)
+      - removes x-axis ticks/labels to save horizontal space
 
-    Args:
-        results: list of model result dicts.
-        top_k: number of best (lowest-mean-ECE) models to plot.
-        save_folder: folder for the output PNG.
+    This is useful for small figures where x tick labels would dominate the layout.
     """
-
     if not results:
         return
 
     def _abbreviate_reward_model_name(model_name: str, max_len: int = 22) -> str:
         s = str(model_name)
-        # RewardBench models are typically "org/name"; keep the repo part for readability.
         if "/" in s:
             s = s.rsplit("/", 1)[-1]
 
-        # Compact a few common suffixes.
         s = re.sub(r"([-_]?instruct(ion)?)$", "-inst", s, flags=re.IGNORECASE)
 
         if len(s) <= max_len:
             return s
 
-        # Middle ellipsis to preserve both prefix and suffix.
         keep_left = max(3, (max_len - 1) // 2)
         keep_right = max(12, max_len - 1 - keep_left)
         return f"{s[:keep_left]}…{s[-keep_right:]}"
@@ -1497,13 +1494,11 @@ def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
     top_models = sorted_results[: min(top_k, len(sorted_results))]
 
     model_names_full = [r.get("model", "") for r in top_models]
-
-    model_names = _make_unique([MODEL_NAME_ABBREVIATIONS.get(n,n) for n in model_names_full], max_len=22)
-
-    # model_names = _make_unique(
-    #     [_abbreviate_reward_model_name(n, max_len=22) for n in model_names_full],
-    #     max_len=22,
-    # )
+    label_max_len = 14
+    model_names = _make_unique(
+        [MODEL_NAME_ABBREVIATIONS.get(n) for n in model_names_full],
+        max_len=label_max_len,
+    )
 
     raw_ece_scores: list[list[float]] = []
     for r in top_models:
@@ -1522,11 +1517,9 @@ def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
 
     os.makedirs(save_folder, exist_ok=True)
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(11, 6), constrained_layout=True)
-    fig.patch.set_facecolor("white")
+    plt.style.use(["science", "no-latex"])
+    fig, ax = plt.subplots(figsize=(3.5, 2.5))
 
-    # Assign distinct colors per reward model.
     unique_models = list(model_names)
     if len(unique_models) <= 8:
         model_cmap = plt.get_cmap("Dark2")
@@ -1537,7 +1530,6 @@ def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
     }
     model_alpha = 0.90
 
-    # Draw the mean global ECE line for reference.
     mean_line = None
     all_raw_scores = [score for scores in raw_ece_scores for score in scores]
     if all_raw_scores:
@@ -1551,13 +1543,11 @@ def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
             zorder=0,
         )
 
-    # Add individual points (scatter / strip-plot style), colored only by reward model.
     rng = np.random.default_rng(0)
     for i, ys in enumerate(raw_ece_scores, start=1):
         if not ys:
             continue
         y = np.asarray(ys, dtype=float)
-        # Light x-jitter so multiple raw points (if present) remain visible.
         jitter = rng.uniform(-0.06, 0.06, size=y.shape[0])
         x = i + jitter
         model_label = model_names[i - 1] if (i - 1) < len(model_names) else None
@@ -1565,7 +1555,7 @@ def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
         ax.scatter(
             x,
             y,
-            s=8.5**2,
+            s=7.5**2,
             alpha=model_alpha,
             c=[c],
             edgecolors="white",
@@ -1573,14 +1563,13 @@ def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
             zorder=3,
         )
 
-    # Reward-model legend.
     model_handles = [
         Line2D(
             [0],
             [0],
             marker="o",
             linestyle="None",
-            markersize=7,
+            markersize=6.2,
             markerfacecolor=model_to_color[m],
             markeredgecolor="white",
             markeredgewidth=0.5,
@@ -1589,42 +1578,38 @@ def visualize_raw_ece_scores(results, top_k=10, save_folder="rlhf_ece"):
         )
         for m in unique_models
     ]
-
-    # Include the mean reference line in the same legend as reward models.
     if mean_line is not None:
         model_handles.append(mean_line)
 
-    ax.legend(
+    leg = ax.legend(
         handles=model_handles,
-        title="Reward model",
         frameon=True,
-        fontsize=12,
-        title_fontsize=13,
+        fontsize=7.0,
         loc="lower right",
-        #bbox_to_anchor=(1.02, 1.0),
-        ncols=1 if len(unique_models) <= 12 else 2,
-    ).get_frame().set_alpha(0.95)
-
-    # Match the boxplot axis styling used in `experiment_calibration.py`.
-    ax.set_title(
-        f"ECE scores (Top {len(top_models)} by ECE)",
-        fontsize=16,
-        fontweight="semibold",
-        pad=12,
+        ncols=2 if len(unique_models) <= 10 else 2,
+        borderpad=0.4,
+        handletextpad=0.5,
+        columnspacing=0.8,
+        labelspacing=0.25,
     )
-    ax.set_ylabel("ECE", fontsize=13)
-    ax.set_xlabel("Reward model", fontsize=12)
-    ax.set_ylim(bottom=-0.001)
-    ax.set_xticks(range(1, len(model_names) + 1), labels=model_names)
-    ax.tick_params(axis="x", labelsize=10, rotation=18)
-    ax.tick_params(axis="y", labelsize=11)
+    leg.get_frame().set_alpha(0.95)
+
+    ax.set_ylabel("ECE", fontsize=11)
+
+    # Remove x ticks/labels for a more compact layout.
+    ax.set_xticks([])
+    ax.tick_params(axis="x", which="both", bottom=False, top=False, labelbottom=False)
+
+    ax.tick_params(axis="y", labelsize=10)
     ax.grid(axis="y", linestyle="--", alpha=0.3)
     ax.set_facecolor("#f7f9fc")
     ax.set_xlim(0.5, len(raw_ece_scores) + 0.5)
-    ax.margins(x=0.04)
-
+    ax.set_ylim(0.12, 0.3)
+    ax.xaxis.set_minor_locator(plt.NullLocator())
+    ax.margins(x=0.02)
+    fig.tight_layout(pad=0)
     fig.savefig(
-        os.path.join(save_folder, f"raw_ece_scores_top_{top_k}.png"),
+        os.path.join(save_folder, f"raw_ece_scores_top_{top_k}_compact.pdf"),
         dpi=300,
         bbox_inches="tight",
     )
@@ -1861,59 +1846,59 @@ def main():
     correlations = compute_correlations(results)
     visualize_correlation(correlations, save_folder=save_folder)
 
-    # Visualize accuracy–rejection curve (reject highest entropy first), colored by ECE
-    visualize_accuracy_rejection_curve(results, k=args.k, save_folder=save_folder)
+    # # Visualize accuracy–rejection curve (reject highest entropy first), colored by ECE
+    # visualize_accuracy_rejection_curve(results, k=args.k, save_folder=save_folder)
 
-    # Visualize accuracy–rejection curve colored by leaderboard rank
-    visualize_accuracy_rejection_curve_by_rank(
-        results, k=args.k, save_folder=save_folder
-    )
+    # # Visualize accuracy–rejection curve colored by leaderboard rank
+    # visualize_accuracy_rejection_curve_by_rank(
+    #     results, k=args.k, save_folder=save_folder
+    # )
 
-    # Visualize accuracy–rejection curve colored by factuality
-    visualize_accuracy_rejection_curve_by_factuality(
-        results, k=args.k, save_folder=save_folder
-    )
+    # # Visualize accuracy–rejection curve colored by factuality
+    # visualize_accuracy_rejection_curve_by_factuality(
+    #     results, k=args.k, save_folder=save_folder
+    # )
 
-    # Visualize accuracy–rejection curve colored by math
-    visualize_accuracy_rejection_curve_by_math(
-        results, k=args.k, save_folder=save_folder
-    )
+    # # Visualize accuracy–rejection curve colored by math
+    # visualize_accuracy_rejection_curve_by_math(
+    #     results, k=args.k, save_folder=save_folder
+    # )
 
-    # Visualize accuracy–rejection curve colored by safety
-    visualize_accuracy_rejection_curve_by_safety(
-        results, k=args.k, save_folder=save_folder
-    )
+    # # Visualize accuracy–rejection curve colored by safety
+    # visualize_accuracy_rejection_curve_by_safety(
+    #     results, k=args.k, save_folder=save_folder
+    # )
 
-    # Visualize accuracy–rejection curve colored by focus
-    visualize_accuracy_rejection_curve_by_focus(
-        results, k=args.k, save_folder=save_folder
-    )
+    # # Visualize accuracy–rejection curve colored by focus
+    # visualize_accuracy_rejection_curve_by_focus(
+    #     results, k=args.k, save_folder=save_folder
+    # )
 
-    # Visualize accuracy–rejection curve colored by ties
-    visualize_accuracy_rejection_curve_by_ties(
-        results, k=args.k, save_folder=save_folder
-    )
+    # # Visualize accuracy–rejection curve colored by ties
+    # visualize_accuracy_rejection_curve_by_ties(
+    #     results, k=args.k, save_folder=save_folder
+    # )
 
-    # Quantify how well each metric groups accuracy–rejection curves
-    quantify_grouping_quality(
-        results,
-        k=args.k,
-        grid_size=101,
-        output_csv=os.path.join(
-            save_folder, f"accuracy_rejection_grouping_quality_k{args.k}.csv"
-        ),
-        output_plot=os.path.join(
-            save_folder, f"accuracy_rejection_curve_group_variance_topk_k{args.k}.png"
-        ),
-        output_side_by_side_plot=os.path.join(
-            save_folder,
-            f"accuracy_rejection_curve_group_variance_and_separation_topk_k{args.k}.png",
-        ),
-    )
+    # # Quantify how well each metric groups accuracy–rejection curves
+    # quantify_grouping_quality(
+    #     results,
+    #     k=args.k,
+    #     grid_size=101,
+    #     output_csv=os.path.join(
+    #         save_folder, f"accuracy_rejection_grouping_quality_k{args.k}.csv"
+    #     ),
+    #     output_plot=os.path.join(
+    #         save_folder, f"accuracy_rejection_curve_group_variance_topk_k{args.k}.png"
+    #     ),
+    #     output_side_by_side_plot=os.path.join(
+    #         save_folder,
+    #         f"accuracy_rejection_curve_group_variance_and_separation_topk_k{args.k}.png",
+    #     ),
+    # )
 
     # Write results to csv
     df = pd.DataFrame(results)
-    output_csv = os.path.join(save_folder, f"rbv2_margin_metrics_{args.k}.csv")
+    output_csv = os.path.join("rlhf_ece", f"rbv2_margin_metrics_{args.k}.csv")
     df.to_csv(output_csv, index=False)
     print(f"\nResults written to {output_csv}")
 
