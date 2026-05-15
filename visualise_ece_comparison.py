@@ -390,21 +390,21 @@ if __name__ == "__main__":
     data_folder = f"results/{dataset_name}/"
     save_folder = "results/improved_plots/"
 
-    def _load(prefix, discrepancy):
+    def _load(prefix, discrepancy, rank_weighting=rank_weighting, bin_spacing=bin_spacing):
         return pd.read_csv(
             f"{data_folder}{prefix}_{dataset_name}_{round(proportion, 2)}"
             f"_{rank_weighting}_{discrepancy}_{bin_spacing}.csv"
         )
 
-    sub_abs_df          = _load("subk_ece_results",           "abs")
-    top_abs_df          = _load("topk_ece_results",           "abs")
-    sub_abs_fr_df       = _load("subk_full_rank_ece_results", "abs")
-    top_abs_fr_df       = _load("topk_full_rank_ece_results", "abs")
+    sub_abs_df          = _load("subk_ece_results",           "abs", rank_weighting=rank_weighting, bin_spacing=bin_spacing)
+    top_abs_df          = _load("topk_ece_results",           "abs", rank_weighting=rank_weighting, bin_spacing=bin_spacing)
+    sub_abs_fr_df       = _load("subk_full_rank_ece_results", "abs", rank_weighting=rank_weighting, bin_spacing=bin_spacing)
+    top_abs_fr_df       = _load("topk_full_rank_ece_results", "abs", rank_weighting=rank_weighting, bin_spacing=bin_spacing)
 
-    sub_jeff_df         = _load("subk_ece_results",           "jeff")
-    top_jeff_df         = _load("topk_ece_results",           "jeff")
-    sub_jeff_fr_df      = _load("subk_full_rank_ece_results", "jeff")
-    top_jeff_fr_df      = _load("topk_full_rank_ece_results", "jeff")
+    sub_jeff_df         = _load("subk_ece_results",           "jeff", rank_weighting="uniform", bin_spacing=bin_spacing)
+    top_jeff_df         = _load("topk_ece_results",           "jeff", rank_weighting="uniform", bin_spacing=bin_spacing)
+    sub_jeff_fr_df      = _load("subk_full_rank_ece_results", "jeff", rank_weighting="uniform", bin_spacing=bin_spacing)
+    top_jeff_fr_df      = _load("topk_full_rank_ece_results", "jeff", rank_weighting="uniform", bin_spacing=bin_spacing)
 
     # Filter to the desired k values
     sub_abs_df     = sub_abs_df    [sub_abs_df    ["k"].isin(k_values_sub_k)]
