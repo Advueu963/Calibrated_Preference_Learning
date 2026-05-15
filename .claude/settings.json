@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run *)",
+      "Bash(sed -n '1375,1385p' experiment_calibration.py)",
+      "Bash(sed -n '1620,1630p' experiment_calibration.py)",
+      "Bash(sed -n '1676,1688p' experiment_calibration.py)",
+      "Bash(sed -n '1453,1458p' experiment_calibration.py)",
+      "Bash(sed -n '1626,1636p' experiment_calibration.py)"
+    ]
+  }
+}
