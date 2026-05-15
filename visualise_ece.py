@@ -25,8 +25,14 @@ _MODEL_FULLNAME = {
 def _build_model_palette(df):
     """Return a consistent {model: color} dict keyed on sorted model names."""
     models = sorted(df["model"].unique())
-    colors = sns.color_palette("Set2", n_colors=len(models))
+    colors = sns.color_palette("Dark2", n_colors=len(models))
     return dict(zip(models, colors))
+
+
+def _abbrev_models(df):
+    df = df.copy()
+    df["model"] = df["model"].map(_MODEL_ABBREV).fillna(df["model"])
+    return df
 
 
 def _legend_label(abbrev):
@@ -44,9 +50,14 @@ def _plot_multi_k_boxplots(df, k_values, fig_title, ylabel, save_path):
 
     model_palette = _build_model_palette(df)
     model_order = sorted(df["model"].unique())
+    k_values = [
+        k for k in k_values if not df[(df["k"] == k) & (df["ece"] >= 0)].empty
+    ]
+    if not k_values:
+        return
     n_k = len(k_values)
 
-    fig, axes = plt.subplots(1, n_k, figsize=(2.5 * n_k, 4), sharey=False)
+    fig, axes = plt.subplots(1, n_k, figsize=(3.0 * n_k, 4), sharey=False)
     if n_k == 1:
         axes = [axes]
 
@@ -65,8 +76,8 @@ def _plot_multi_k_boxplots(df, k_values, fig_title, ylabel, save_path):
             dodge=False,
             legend=False,
             ax=ax,
-            linewidth=1.0,
-            width=0.55,
+            linewidth=0.9,
+            width=0.6,
             fliersize=0,
         )
         sns.stripplot(
@@ -79,16 +90,17 @@ def _plot_multi_k_boxplots(df, k_values, fig_title, ylabel, save_path):
             dodge=False,
             legend=False,
             ax=ax,
-            alpha=0.6,
-            size=5,
-            linewidth=0.3,
+            alpha=0.45,
+            size=3.5,
+            linewidth=0.2,
             edgecolor="white",
         )
 
-        ax.set_title(f"$k = {k}$", fontsize=13, fontweight="semibold", pad=8)
+        ax.set_title(f"$k={k}$", fontsize=12, fontweight="semibold", pad=8)
         ax.set_xlabel("")
         ax.set_ylabel(ylabel if i == 0 else "", fontsize=11)
-        ax.set_ylim(bottom=0)
+        data_max = k_df["ece"].max()
+        ax.set_ylim(bottom=0, top=min(1.01, data_max * 1.15 + 0.02))
         ax.tick_params(axis="x", labelsize=9, rotation=35)
         ax.tick_params(axis="y", labelsize=10)
         ax.grid(axis="y", linestyle="--", alpha=0.4)
@@ -103,7 +115,7 @@ def _plot_multi_k_boxplots(df, k_values, fig_title, ylabel, save_path):
         handles=legend_handles,
         title="Model",
         loc="lower center",
-        bbox_to_anchor=(0.5, -0.08),
+        bbox_to_anchor=(0.5, -0.06),
         ncol=min(len(legend_handles), 5),
         fontsize=10,
         title_fontsize=11,
@@ -111,26 +123,103 @@ def _plot_multi_k_boxplots(df, k_values, fig_title, ylabel, save_path):
         framealpha=0.9,
     )
 
-    fig.suptitle(fig_title, fontsize=15, fontweight="semibold")
-    fig.tight_layout(rect=[0, 0.1, 1, 0.96])
+    fig.suptitle(fig_title, fontsize=14, fontweight="semibold")
+    fig.tight_layout(rect=[0, 0.08, 1, 0.96])
     fig.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"  → Saved {save_path}")
 
 
-def _style_lineplot_axis(
-    ax, title, xlabel, ylabel, x_ticks, y_upper=None, y_lower=-0.001
+def _plot_lineplots(
+    sub_df, top_df, sub_full_rank_df, top_full_rank_df,
+    k_values_sub_k, k_values_top_k,
+    fig_title, save_path,
 ):
-    """Apply consistent styling to ECE line plots."""
-    ax.set_title(title, fontsize=16, fontweight="semibold", pad=12)
-    ax.set_xlabel(xlabel, fontsize=13)
-    ax.set_ylabel(ylabel, fontsize=13)
-    ax.set_facecolor("#f7f9fc")
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-    ax.tick_params(axis="both", labelsize=11)
-    ax.set_xticks(x_ticks)
-    ax.set_ylim(y_lower, y_upper)
-    ax.margins(x=0.04)
+    """
+    2x2 line-plot grid (sub-k, top-k x standard, full-rank).
+    One line per model with a +/-SD error band. Styling matches the
+    comparison line plots in visualise_ece_comparison.py.
+    """
+    datasets = [
+        (sub_df,           k_values_sub_k, "Sub-$k$ ECE vs $k$"),
+        (top_df,           k_values_top_k, "Top-$k$ ECE vs $k$"),
+        (sub_full_rank_df, k_values_sub_k, "Sub-$k$ ECE (Full Rank) vs $k$"),
+        (top_full_rank_df, k_values_top_k, "Top-$k$ ECE (Full Rank) vs $k$"),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 11), sharey=False)
+    fig.patch.set_facecolor("white")
+    ax_flat = [axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]]
+
+    model_palette = None  # set on first dataset
+
+    for ax, (df, k_vals, subtitle) in zip(ax_flat, datasets):
+        d = _abbrev_models(df)
+
+        k_vals = [
+            k for k in k_vals
+            if not d[(d["k"] == k) & (d["ece"] >= 0)].empty
+        ]
+
+        all_models = sorted(d["model"].unique())
+        if model_palette is None:
+            colors = sns.color_palette("Dark2", n_colors=len(all_models))
+            model_palette = dict(zip(all_models, colors))
+
+        for model in all_models:
+            color = model_palette.get(model)
+            if color is None:
+                continue
+            mdf = d[(d["model"] == model) & (d["ece"] >= 0)]
+            if mdf.empty:
+                continue
+            means = mdf.groupby("k")["ece"].mean().reindex(k_vals)
+            sds = mdf.groupby("k")["ece"].std().reindex(k_vals)
+            ax.plot(
+                k_vals, means.values,
+                color=color, linestyle="-",
+                linewidth=2.2, marker="o", markersize=6,
+                markeredgewidth=0,
+                label=model,
+            )
+            ax.fill_between(
+                k_vals,
+                (means - sds).values,
+                (means + sds).values,
+                color=color, alpha=0.10,
+            )
+
+        ax.set_title(subtitle, fontsize=12, fontweight="semibold", pad=8)
+        ax.set_xlabel("$k$", fontsize=12)
+        ax.set_ylabel("ECE", fontsize=12)
+        if k_vals:
+            ax.set_xticks(k_vals)
+        data_max = d[d["ece"] >= 0]["ece"].max()
+        ax.set_ylim(bottom=0, top=min(1.01, data_max * 1.15 + 0.02))
+        ax.set_facecolor("#f7f9fc")
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+        ax.tick_params(axis="both", labelsize=10)
+        ax.margins(x=0.04)
+
+    model_handles = [
+        mpatches.Patch(color=model_palette[m], label=_legend_label(m))
+        for m in sorted(model_palette)
+    ]
+    fig.legend(
+        handles=model_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.04),
+        ncol=len(model_handles),
+        fontsize=10,
+        frameon=True,
+        framealpha=0.9,
+    )
+
+    fig.suptitle(fig_title, fontsize=15, fontweight="semibold")
+    fig.tight_layout(rect=[0, 0.06, 1, 0.97])
+    fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  → Saved {save_path}")
 
 
 def visualize_ece_results(
@@ -189,112 +278,16 @@ def visualize_ece_results(
     )
 
     print("Visualizing ECE vs k with Error Bars...")
-    fig, axes = plt.subplots(2, 2, figsize=(20, 12), sharey=False)
-    fig.patch.set_facecolor("white")
-    sns.lineplot(
-        data=sub_df,
-        x="k",
-        y="ece",
-        hue="model",
-        marker="o",
-        errorbar=("sd"),
-        palette="Dark2",
-        linestyle="--",
-        linewidth=2.4,
-        markersize=7,
-        markeredgewidth=0,
-        ax=axes[0, 0],
-        legend=False,
+    _plot_lineplots(
+        sub_df=sub_df,
+        top_df=top_df,
+        sub_full_rank_df=sub_full_rank_df,
+        top_full_rank_df=top_full_rank_df,
+        k_values_sub_k=k_values_sub_k,
+        k_values_top_k=k_values_top_k,
+        fig_title=f"ECE vs $k$ — {dataset_name}",
+        save_path=f"{save_folder}ece_vs_k_errorbars_{base}.pdf",
     )
-    _style_lineplot_axis(
-        axes[0, 0], "Sub-k ECE vs k", "k", "ECE", k_values_sub_k, y_upper=None
-    )
-
-    sns.lineplot(
-        data=top_df,
-        x="k",
-        y="ece",
-        hue="model",
-        marker="o",
-        errorbar=("sd"),
-        palette="Dark2",
-        linestyle="--",
-        linewidth=2.4,
-        markersize=7,
-        markeredgewidth=0,
-        ax=axes[0, 1],
-        legend=False,
-    )
-    _style_lineplot_axis(
-        axes[0, 1], "Top-k ECE vs k", "k", "ECE", k_values_top_k, y_upper=None
-    )
-
-    sns.lineplot(
-        data=sub_full_rank_df,
-        x="k",
-        y="ece",
-        hue="model",
-        marker="o",
-        errorbar=("sd"),
-        palette="Dark2",
-        linestyle="--",
-        linewidth=2.4,
-        markersize=7,
-        markeredgewidth=0,
-        ax=axes[1, 0],
-        legend=True,
-    )
-    _style_lineplot_axis(
-        axes[1, 0],
-        "Sub-k ECE vs k (Full Rank)",
-        "k",
-        "ECE",
-        k_values_sub_k,
-        y_upper=None,
-    )
-
-    sns.lineplot(
-        data=top_full_rank_df,
-        x="k",
-        y="ece",
-        hue="model",
-        marker="o",
-        errorbar=("sd"),
-        palette="Dark2",
-        linestyle="--",
-        linewidth=2.4,
-        markersize=7,
-        markeredgewidth=0,
-        ax=axes[1, 1],
-        legend=False,
-    )
-    _style_lineplot_axis(
-        axes[1, 1],
-        "Top-k ECE vs k (Full Rank)",
-        "k",
-        "ECE",
-        k_values_top_k,
-        y_upper=None,
-        y_lower=None,
-    )
-
-    handles, labels = axes[1, 0].get_legend_handles_labels()
-    legend_top = axes[1, 0].legend(
-        handles,
-        labels,
-        title="Model",
-        frameon=True,
-        fontsize=11,
-        title_fontsize=12,
-        loc="upper left",
-        bbox_to_anchor=(1.02, 1),
-    )
-    legend_top.get_frame().set_alpha(0.9)
-
-    fig.tight_layout()
-    fig.savefig(f"{save_folder}ece_vs_k_errorbars_{base}.pdf", dpi=300)
-    plt.close(fig)
-    print(f"  → Saved {save_folder}ece_vs_k_errorbars_{base}.pdf")
 
 
 # Hard coding the proportion used to save the .csv files through experiment.calibration

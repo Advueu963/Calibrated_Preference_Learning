@@ -311,8 +311,6 @@ The code uses two equivalent encodings of a ranking, each in a fixed place.
   root; it is not vendored. The active code path computes overall metrics, but
   the file is opened at startup, so provide it (even as `{}`) or comment out
   that load before running. The script also requires HuggingFace network access.
-- **Vendored `scikit-lr` binary is macOS arm64 / CPy3.11 only.** Other
-  platforms rebuild from source during `uv sync` (needs a C/C++ toolchain).
 - **Long runs.** Large-ranking-space datasets (`letter`, `pendigits`, `movies`,
   …) are the slow ones; ECE there is intentionally restricted to test-fold
   rankings to keep it tractable.
